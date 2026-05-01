@@ -184,3 +184,5 @@ fort.20
 
 # Optional: uncomment to ignore simulation results
 # test_WT_FMU_sim_results.csv
+
+slprj/
