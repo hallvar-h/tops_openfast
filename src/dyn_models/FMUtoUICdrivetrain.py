@@ -311,8 +311,8 @@ class FMUtoUICdrivetrain(DAEModel):
         # Send generator torque command (kN·m) into OpenFAST-FMU
         Te_kNm_cmd = (float(Te_pu)) * self._T_base_Nm / (1e3)
         input_torque = float(Te_kNm_cmd[0])
-        if t > 5.0:
-            input_torque = input_torque * 1.
+        if t > 30.0:
+            input_torque = input_torque * 1.0
         self.fmu.setReal([self.vrs['GenSpdOrTrq']], [input_torque])
         self._gen_spdortrq_kNm_set = input_torque
         

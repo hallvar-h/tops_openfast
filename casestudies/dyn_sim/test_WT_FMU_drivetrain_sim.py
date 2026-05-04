@@ -33,8 +33,8 @@ if __name__ == '__main__':
 
     # UIC p_ref for power flow (FMU provides it during dynamics via connection)
     uic_model = ps.vsc['UIC_sig']
-    uic_model.par['p_ref'][:] = 0.0
-    uic_model.par['q_ref'][:] = 0.0
+    uic_model.par['p_ref'][:] = 0.75
+    uic_model.par['q_ref'][:] = 0.
 
     t0 = time.perf_counter()
     print("Running power flow...", flush=True)
@@ -66,6 +66,11 @@ if __name__ == '__main__':
     P_ref_stored = []
     P_e_uic_pu_stored = []
     P_ref_uic_pu_stored = []
+    # UIC bus-side complex power (same definitions as test_WT_sim.py / wt_model.csv)
+    P_uic_bus_actual_stored = []
+    Q_uic_bus_actual_stored = []
+    P_uic_bus_ref_stored = []
+    Q_uic_bus_ref_stored = []
     v_bus = []
     fmu_outputs_stored = []
     # Also store commanded electrical torque sent to FMU (from FMUtoUICdrivetrain)
@@ -157,6 +162,16 @@ if __name__ == '__main__':
     GenPwr_readback_kW_stored.append(np.nan)
     GenSpdOrTrq_readback_kNm_stored.append(np.nan)
     ElecPwrCom_readback_kW_stored.append(np.nan)
+
+    i_a0 = uic_model.i_a(x0, v0)[0]
+    s_bus_actual0 = uic_model.s_e(x0, v0)[0]
+    s_ref_internal0 = uic_model.p_ref(x0, v0)[0] + 1j * uic_model.q_ref(x0, v0)[0]
+    xf0 = uic_model.par['xf'][0]
+    s_bus_ref0 = s_ref_internal0 - 1j * xf0 * (np.abs(i_a0) ** 2)
+    P_uic_bus_actual_stored.append(s_bus_actual0.real * uic_s_n / sys_s_n)
+    Q_uic_bus_actual_stored.append(s_bus_actual0.imag * uic_s_n / sys_s_n)
+    P_uic_bus_ref_stored.append(s_bus_ref0.real * uic_s_n / sys_s_n)
+    Q_uic_bus_ref_stored.append(s_bus_ref0.imag * uic_s_n / sys_s_n)
 
     v_t_uic = uic_model.v_t(x0, v0)[0]
     v_bus.append(np.abs(v_t_uic))
@@ -260,6 +275,16 @@ if __name__ == '__main__':
         else:
             ElecPwrCom_readback_kW_stored.append(np.nan)
 
+        i_a = uic_model.i_a(x, v)[0]
+        s_bus_actual = uic_model.s_e(x, v)[0]
+        s_ref_internal = uic_model.p_ref(x, v)[0] + 1j * uic_model.q_ref(x, v)[0]
+        xf = uic_model.par['xf'][0]
+        s_bus_ref = s_ref_internal - 1j * xf * (np.abs(i_a) ** 2)
+        P_uic_bus_actual_stored.append(s_bus_actual.real * uic_s_n / sys_s_n)
+        Q_uic_bus_actual_stored.append(s_bus_actual.imag * uic_s_n / sys_s_n)
+        P_uic_bus_ref_stored.append(s_bus_ref.real * uic_s_n / sys_s_n)
+        Q_uic_bus_ref_stored.append(s_bus_ref.imag * uic_s_n / sys_s_n)
+
         v_t_uic = uic_model.v_t(x, v)[0]
         v_bus.append(np.abs(v_t_uic))
 
@@ -286,6 +311,10 @@ if __name__ == '__main__':
             'P_e_uic_pu_raw': P_e_uic_pu_stored,
             'P_ref_uic_pu_raw': P_ref_uic_pu_stored,
             'v_bus_pu': v_bus,
+            'P_uic_bus_actual_sys_pu': P_uic_bus_actual_stored,
+            'Q_uic_bus_actual_sys_pu': Q_uic_bus_actual_stored,
+            'P_uic_bus_ref_sys_pu': P_uic_bus_ref_stored,
+            'Q_uic_bus_ref_sys_pu': Q_uic_bus_ref_stored,
             # Speed base for converting FMU rpm signals to pu
             'omega_base_rpm': omega_base_rpm_export,
         }
@@ -493,8 +522,8 @@ if __name__ == '__main__':
 
     fig1b.tight_layout()
 
-    # Figure 2: power + torques (TOPS-side drivetrain)
-    fig2, axes2 = plt.subplots(2, 1, sharex=True, figsize=(9, 8))
+    # Figure 2: power + reactive power + torques (TOPS-side drivetrain)
+    fig2, axes2 = plt.subplots(3, 1, sharex=True, figsize=(9, 10))
     fig2.suptitle('Power & torques (TOPS-side drivetrain)', fontsize=12)
 
     # Power (system side, already in sys pu in this script)
@@ -503,6 +532,25 @@ if __name__ == '__main__':
     axes2[0].set_ylabel('Power (p.u.)')
     _safe_legend(axes2[0], loc='best', fontsize=8)
     axes2[0].grid(True, alpha=0.3)
+
+    axes2[1].plot(
+        t_stored,
+        out_df['Q_uic_bus_actual_sys_pu'],
+        label='Q (UIC bus, sys pu)',
+        color=PLOT_COLORS[1],
+        linewidth=1.5,
+    )
+    axes2[1].plot(
+        t_stored,
+        out_df['Q_uic_bus_ref_sys_pu'],
+        '--',
+        label='Q_ref (UIC bus, sys pu)',
+        color=PLOT_COLORS[2],
+        linewidth=1.5,
+    )
+    axes2[1].set_ylabel('Q (p.u.)')
+    _safe_legend(axes2[1], loc='best', fontsize=8)
+    axes2[1].grid(True, alpha=0.3)
 
     # Torques (all in local pu on drivetrain base)
     if fmu_mdl is not None and df is not None:
@@ -525,7 +573,7 @@ if __name__ == '__main__':
                 omega_e_arr = result[omega_e_key].to_numpy(dtype=float)
                 omega_m_arr = out_df['omega_m_pu_meas'].to_numpy(dtype=float)
                 Tshaft_pu = K_pu * theta_s_arr + D_pu * (omega_m_arr - omega_e_arr)
-                axes2[1].plot(
+                axes2[2].plot(
                     t_stored,
                     Tshaft_pu,
                     label='T_shaft (TOPS)',
@@ -537,7 +585,7 @@ if __name__ == '__main__':
         if hasattr(fmu_mdl, '_T_base_Nm') and fmu_mdl._T_base_Nm and 'HSShftTq' in df.columns:
             T_base_Nm = float(np.asarray(fmu_mdl._T_base_Nm).ravel()[0])
             Tmech_of_pu = (df['HSShftTq'].to_numpy(dtype=float) * 1e3) / T_base_Nm
-            axes2[1].plot(
+            axes2[2].plot(
                 t_stored,
                 Tmech_of_pu,
                 label='T_mech (OpenFAST HSShftTq)',
@@ -561,7 +609,7 @@ if __name__ == '__main__':
                 # Match drivetrain model logic exactly: divide if omega != 0 else 0
                 Te_out_pu = np.zeros_like(omega_e_arr, dtype=float)
                 np.divide(Pe_loc_pu_arr, omega_e_arr, out=Te_out_pu, where=(omega_e_arr != 0.0))
-                axes2[1].plot(
+                axes2[2].plot(
                     t_stored,
                     Te_out_pu,
                     '--',
@@ -573,7 +621,7 @@ if __name__ == '__main__':
                 # Use the logged command from the wrapper (this is what was actually sent to the FMU)
                 # to avoid any base/sign mismatch from recomputing it here.
                 if 'Te_cmd_pu' in out_df.columns:
-                    axes2[1].plot(
+                    axes2[2].plot(
                         t_stored,
                         out_df['Te_cmd_pu'].to_numpy(dtype=float),
                         '--',
@@ -583,10 +631,10 @@ if __name__ == '__main__':
                         alpha=0.9,
                     )
 
-    axes2[1].set_ylabel('Torque (p.u. on WT base)')
-    axes2[1].set_xlabel('Time (s)')
-    _safe_legend(axes2[1], loc='best', fontsize=8)
-    axes2[1].grid(True, alpha=0.3)
+    axes2[2].set_ylabel('Torque (p.u. on WT base)')
+    axes2[2].set_xlabel('Time (s)')
+    _safe_legend(axes2[2], loc='best', fontsize=8)
+    axes2[2].grid(True, alpha=0.3)
 
     fig2.tight_layout()
     print(f"\nSimulation took {time.perf_counter() - t_start_wall:.2f} seconds.")

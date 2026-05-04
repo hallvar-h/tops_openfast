@@ -1,1 +1,1 @@
-C:\Users\valentinc\Workspace\OpenFAST\simulations\Debug_Sigrid\master_thesis
+c:\git\master_thesis

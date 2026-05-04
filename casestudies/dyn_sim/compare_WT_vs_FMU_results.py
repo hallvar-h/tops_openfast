@@ -55,6 +55,8 @@ def _align_df_on_time(df: pd.DataFrame, t_target: np.ndarray, t_col: str = 't') 
             continue
         s = d[col]
         if not np.issubdtype(s.dtype, np.number):
+            s = pd.to_numeric(s, errors='coerce')
+        if not np.issubdtype(s.dtype, np.number):
             continue
         y = np.asarray(s, dtype=float).ravel()
         # Guard against all-NaN
@@ -155,38 +157,88 @@ def main(argv: list[str] | None = None):
         fmu_a['omega_m_rpm'] = fmu_a['RotSpeed'].to_numpy(dtype=float)
         fmu_a['omega_m_pu_common'] = _pu_from_rpm(fmu_a['omega_m_rpm'].to_numpy(dtype=float), common_base_rpm)
 
-    # --- Plots ---
-    fig, axes = plt.subplots(5, 1, sharex=True, figsize=(10, 12))
-    fig.suptitle('WT model vs FMU drivetrain: comparable signals', fontsize=12)
+    # --- Figure 1 — electric side: P, Q, terminal voltage (system / UIC bus quantities) ---
+    fig_power, ax_power = plt.subplots(3, 1, sharex=True, figsize=(10, 9))
+    fig_power.suptitle(
+        'Electric side (UIC): active & reactive power and terminal voltage — WT vs FMU',
+        fontsize=12,
+    )
 
-    # 1) Power on system base
+    # Active power + P_ref
     if 'P_e_sys_pu' in wt_a.columns and 'P_e_sys_pu' in fmu_a.columns:
-        axes[0].plot(t_fmu, wt_a['P_e_sys_pu'], label='WT: P_e', color=PLOT_COLORS[0], linewidth=1.4)
-        axes[0].plot(t_fmu, fmu_a['P_e_sys_pu'], '--', label='FMU: P_e', color=PLOT_COLORS[1], linewidth=1.2)
+        ax_power[0].plot(t_fmu, wt_a['P_e_sys_pu'], label='WT: P_e', color=PLOT_COLORS[0], linewidth=1.4)
+        ax_power[0].plot(t_fmu, fmu_a['P_e_sys_pu'], '--', label='FMU: P_e', color=PLOT_COLORS[1], linewidth=1.2)
     if 'P_ref_sys_pu' in wt_a.columns and 'P_ref_sys_pu' in fmu_a.columns:
-        axes[0].plot(t_fmu, wt_a['P_ref_sys_pu'], ':', label='WT: P_ref', color=PLOT_COLORS[2], linewidth=1.2)
-        axes[0].plot(t_fmu, fmu_a['P_ref_sys_pu'], '-.', label='FMU: P_ref', color=PLOT_COLORS[3], linewidth=1.2)
-    axes[0].set_ylabel('Power (p.u.)')
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend(loc='best', fontsize=8)
-    _plain_y(axes[0])
+        ax_power[0].plot(t_fmu, wt_a['P_ref_sys_pu'], ':', label='WT: P_ref', color=PLOT_COLORS[2], linewidth=1.2)
+        ax_power[0].plot(t_fmu, fmu_a['P_ref_sys_pu'], '-.', label='FMU: P_ref', color=PLOT_COLORS[3], linewidth=1.2)
+    ax_power[0].set_ylabel('P (p.u.)')
+    ax_power[0].grid(True, alpha=0.3)
+    ax_power[0].legend(loc='best', fontsize=8)
+    _plain_y(ax_power[0])
 
-    # 2) Terminal voltage magnitude
+    # Reactive power + Q_ref (UIC bus; WT CSV — FMU export may add same column names later)
+    q_act_wt, q_ref_wt = 'Q_uic_bus_actual_sys_pu', 'Q_uic_bus_ref_sys_pu'
+    # Plot Q_ref before Q so actual draws on top; dashed Q_ref stays visible in legend vs dotted overlap.
+    if q_ref_wt in wt_a.columns:
+        ax_power[1].plot(
+            t_fmu,
+            wt_a[q_ref_wt],
+            '--',
+            label='WT: Q_ref',
+            color=PLOT_COLORS[2],
+            linewidth=1.8,
+            zorder=1,
+        )
+    if q_ref_wt in fmu_a.columns:
+        ax_power[1].plot(
+            t_fmu,
+            fmu_a[q_ref_wt],
+            '-.',
+            label='FMU: Q_ref',
+            color=PLOT_COLORS[3],
+            linewidth=1.4,
+            zorder=1,
+        )
+    if q_act_wt in wt_a.columns:
+        ax_power[1].plot(t_fmu, wt_a[q_act_wt], label='WT: Q', color=PLOT_COLORS[0], linewidth=1.4, zorder=2)
+    if q_act_wt in fmu_a.columns:
+        ax_power[1].plot(
+            t_fmu,
+            fmu_a[q_act_wt],
+            '--',
+            label='FMU: Q',
+            color=PLOT_COLORS[1],
+            linewidth=1.2,
+            zorder=2,
+        )
+    ax_power[1].set_ylabel('Q (p.u.)')
+    ax_power[1].grid(True, alpha=0.3)
+    ax_power[1].legend(loc='best', fontsize=8)
+    _plain_y(ax_power[1])
+
+    # Terminal voltage magnitude
     if 'v_bus_pu' in wt_a.columns and 'v_bus_pu' in fmu_a.columns:
-        axes[1].plot(t_fmu, wt_a['v_bus_pu'], label='WT: |V_t|', color=PLOT_COLORS[0], linewidth=1.4)
-        axes[1].plot(t_fmu, fmu_a['v_bus_pu'], '--', label='FMU: |V_t|', color=PLOT_COLORS[1], linewidth=1.2)
-    axes[1].set_ylabel('|V_t| (p.u.)')
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend(loc='best', fontsize=8)
-    _plain_y(axes[1])
+        ax_power[2].plot(t_fmu, wt_a['v_bus_pu'], label='WT: |V_t|', color=PLOT_COLORS[0], linewidth=1.4)
+        ax_power[2].plot(t_fmu, fmu_a['v_bus_pu'], '--', label='FMU: |V_t|', color=PLOT_COLORS[1], linewidth=1.2)
+    ax_power[2].set_ylabel('|V_t| (p.u.)')
+    ax_power[2].set_xlabel('Time (s)')
+    ax_power[2].grid(True, alpha=0.3)
+    ax_power[2].legend(loc='best', fontsize=8)
+    _plain_y(ax_power[2])
 
-    # 3) Speeds (pu on common base = FMU omega_m_rated)
+    fig_power.tight_layout()
+
+    # --- Figure 2 — WT / mechanical–aero side: speeds, pitch, wind ---
+    fig_sig, axes = plt.subplots(3, 1, sharex=True, figsize=(10, 8))
+    fig_sig.suptitle('WT / drivetrain side: speeds, pitch, wind — WT vs FMU', fontsize=12)
+
+    # 1) Speeds (pu on common base = FMU omega_m_rated)
     if 'omega_e_pu_common' in wt_a.columns:
-        axes[2].plot(t_fmu, wt_a['omega_e_pu_common'], label='WT: ω_e', color=PLOT_COLORS[0], linewidth=1.4)
+        axes[0].plot(t_fmu, wt_a['omega_e_pu_common'], label='WT: ω_e', color=PLOT_COLORS[0], linewidth=1.4)
     if 'omega_m_pu_common' in wt_a.columns:
-        axes[2].plot(t_fmu, wt_a['omega_m_pu_common'], ':', label='WT: ω_m', color=PLOT_COLORS[2], linewidth=1.2)
+        axes[0].plot(t_fmu, wt_a['omega_m_pu_common'], ':', label='WT: ω_m', color=PLOT_COLORS[2], linewidth=1.2)
     if 'omega_e_pu_common' in fmu_a.columns:
-        axes[2].plot(
+        axes[0].plot(
             t_fmu,
             fmu_a['omega_e_pu_common'],
             '--',
@@ -195,7 +247,7 @@ def main(argv: list[str] | None = None):
             linewidth=1.2,
         )
     if 'omega_m_pu_common' in fmu_a.columns:
-        axes[2].plot(
+        axes[0].plot(
             t_fmu,
             fmu_a['omega_m_pu_common'],
             '-.',
@@ -203,42 +255,44 @@ def main(argv: list[str] | None = None):
             color=PLOT_COLORS[3],
             linewidth=1.2,
         )
-    axes[2].set_ylabel('Speed (p.u.)')
+    axes[0].set_ylabel('Speed (p.u.)')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc='best', fontsize=8)
+    _plain_y(axes[0])
+
+    # 2) Pitch (deg)
+    if 'pitch_deg' in wt_a.columns:
+        axes[1].plot(t_fmu, wt_a['pitch_deg'], label='WT: pitch', color=PLOT_COLORS[0], linewidth=1.4)
+    if 'BldPitch1' in fmu_a.columns:
+        axes[1].plot(t_fmu, fmu_a['BldPitch1'], '--', label='FMU: pitch', color=PLOT_COLORS[1], linewidth=1.2)
+    axes[1].set_ylabel('Pitch (deg)')
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(loc='best', fontsize=8)
+    _plain_y(axes[1])
+
+    # 3) Wind (m/s)
+    if 'wind_speed_mps' in wt_a.columns:
+        axes[2].plot(t_fmu, wt_a['wind_speed_mps'], label='WT: wind', color=PLOT_COLORS[0], linewidth=1.4)
+    if 'Wind1VelX' in fmu_a.columns:
+        axes[2].plot(t_fmu, fmu_a['Wind1VelX'], '--', label='FMU: Wind1VelX', color=PLOT_COLORS[1], linewidth=1.2)
+    if 'RtVAvgxh' in fmu_a.columns:
+        axes[2].plot(t_fmu, fmu_a['RtVAvgxh'], ':', label='FMU: RtVAvgxh', color=PLOT_COLORS[2], linewidth=1.2)
+    axes[2].set_ylabel('Wind (m/s)')
+    axes[2].set_xlabel('Time (s)')
     axes[2].grid(True, alpha=0.3)
     axes[2].legend(loc='best', fontsize=8)
     _plain_y(axes[2])
 
-    # 4) Pitch (deg)
-    if 'pitch_deg' in wt_a.columns:
-        axes[3].plot(t_fmu, wt_a['pitch_deg'], label='WT: pitch', color=PLOT_COLORS[0], linewidth=1.4)
-    if 'BldPitch1' in fmu_a.columns:
-        axes[3].plot(t_fmu, fmu_a['BldPitch1'], '--', label='FMU: pitch', color=PLOT_COLORS[1], linewidth=1.2)
-    axes[3].set_ylabel('Pitch (deg)')
-    axes[3].grid(True, alpha=0.3)
-    axes[3].legend(loc='best', fontsize=8)
-    _plain_y(axes[3])
-
-    # 5) Wind (m/s)
-    if 'wind_speed_mps' in wt_a.columns:
-        axes[4].plot(t_fmu, wt_a['wind_speed_mps'], label='WT: wind', color=PLOT_COLORS[0], linewidth=1.4)
-    # FMU has Wind1VelX and/or RtVAvgxh
-    if 'Wind1VelX' in fmu_a.columns:
-        axes[4].plot(t_fmu, fmu_a['Wind1VelX'], '--', label='FMU: Wind1VelX', color=PLOT_COLORS[1], linewidth=1.2)
-    if 'RtVAvgxh' in fmu_a.columns:
-        axes[4].plot(t_fmu, fmu_a['RtVAvgxh'], ':', label='FMU: RtVAvgxh', color=PLOT_COLORS[2], linewidth=1.2)
-    axes[4].set_ylabel('Wind (m/s)')
-    axes[4].set_xlabel('Time (s)')
-    axes[4].grid(True, alpha=0.3)
-    axes[4].legend(loc='best', fontsize=8)
-    _plain_y(axes[4])
-
-    fig.tight_layout()
+    fig_sig.tight_layout()
 
     plots_dir = os.path.join(project_root, 'casestudies', 'dyn_sim', 'logs', 'fmu_drivetrain', 'plots')
     os.makedirs(plots_dir, exist_ok=True)
-    out_png = os.path.join(plots_dir, 'compare_WT_vs_FMU_results.png')
-    fig.savefig(out_png, dpi=180)
-    print(f"Saved comparison figure to {out_png}")
+    out_power = os.path.join(plots_dir, 'compare_WT_vs_FMU_power.png')
+    out_sig = os.path.join(plots_dir, 'compare_WT_vs_FMU_signals.png')
+    fig_power.savefig(out_power, dpi=180)
+    fig_sig.savefig(out_sig, dpi=180)
+    print(f"Saved electric-side comparison figure to {out_power}")
+    print(f"Saved WT-side comparison figure to {out_sig}")
     if not args.no_show:
         plt.show()
 

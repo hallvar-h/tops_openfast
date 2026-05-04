@@ -50,7 +50,7 @@ if __name__ == '__main__':
     t_end = 240 # Simulation time
 
     # Solver
-    sol = dps_sol.ModifiedEulerDAE(ps.state_derivatives, ps.solve_algebraic, 0, x0, t_end, max_step=5e-3)
+    sol = dps_sol.ModifiedEulerDAE(ps.state_derivatives, ps.solve_algebraic, 0, x0, t_end, max_step=1e-2)
     # endregion
 
     v_bus_mag = np.abs(ps.v_0)
