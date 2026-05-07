@@ -127,6 +127,7 @@ class FMUtoUICdrivetrain(DAEModel):
             raise ValueError(f"Invalid 'fmu_dt'={self._fmu_dt}. Must be a positive finite float (s).")
         self._last_fmu_comm_point = None
         self._fmu_warm_stepped = False
+        self._primed_at_init = False
         # Cached fmu measurements (updated once per tops step in step_fmu)
         # Avoid reading fmu inside state_derivatives() since the solver may call it multiple times per step
         self._omega_m_pu_meas = None
@@ -135,6 +136,12 @@ class FMUtoUICdrivetrain(DAEModel):
         self._gen_tq_kNm_meas = None
         self._gen_spdortrq_kNm_set = None
         self._genpwr_kW_set = None
+
+        # Startup workaround for OpenFAST FMU internal offset compensation:
+        # For the first N FMU macro-steps, echo the FMU's own measured GenTq back into GenSpdOrTrq.
+        # This makes (ideal - input) ~ 0 inside the FMU during the "activate==false" window.
+        self._startup_echo_steps_total = 10
+        self._startup_echo_steps_left = int(self._startup_echo_steps_total)
 
         # Electrical power command to controller (kW)
         if 'ElecPwrCom_kW' not in par.dtype.names:
@@ -192,25 +199,52 @@ class FMUtoUICdrivetrain(DAEModel):
         self._input_values["P_e"] = self.P_e(x_0, v_0)
         self._input_values["S_n_UIC"] = self.S_n_UIC(x_0, v_0)
 
-        # Initialize drivetrain states from fmu outputs
+        # Initialize drivetrain states (do not read FMU outputs before a doStep()).
         X = self.local_view(x_0)
         par = self.par
-        rot_rpm = float(self.fmu.getReal([self.vrs['RotSpeed']])[0]) # get initial rotor speed from fmu
-        gen_rpm = float(self.fmu.getReal([self.vrs['GenSpeed']])[0]) # get initial generator speed from fmu
-        self._gen_tq_kNm_meas = float(self.fmu.getReal([self.vrs['GenTq']])[0]) # get initial generator torque from fmu
-        self._gen_speed_rpm_meas = gen_rpm # cache generator speed for next step
-        self._omega_m_pu_meas = rot_rpm / self._omega_base_rpm
-
-        X['omega_e'] = gen_rpm / self._omega_base_rpm # initialize generator speed in pu
 
         # Electrical torque requested by coupling at init (local pu)
         Pe_uic_pu = float(np.asarray(self.P_e(x_0, v_0)).ravel()[0]) # get P_e output from UIC
         S_n_UIC = float(np.asarray(self.S_n_UIC(x_0, v_0)).ravel()[0]) # get UIC S_n base 
         Pe_pu = Pe_uic_pu * (S_n_UIC / par['S_n']) # convert P_e to local pu on S_n base
-        Te_pu = Pe_pu / (self._efficiency * X['omega_e']) if abs(X['omega_e']) > 1e-6 else 0.0
+        omega_e0 = 1.0  # hardcoded guess. aligns with init in openfast data, this also assumes rated speed
+        Te_pu = Pe_pu / (self._efficiency * omega_e0) if abs(omega_e0) > 1e-6 else 0.0
         self._Te_pu_cmd = Te_pu # cache electrical torque command for next step
-
         X['theta_s'] = Te_pu / par['K'] # initialize shaft twist
+
+        # Prime the FMU once before the dynamic simulation loop.
+        # OpenFAST FMU outputs are often zeros until the first doStep().
+        # We advance the FMU from 0 -> dt using the initial coupling inputs.
+        # Set env var FMU_CACHE_AFTER_PRIME=1 to latch FMU outputs after the prime step.
+        if not self._primed_at_init:
+            dt0 = float(self._fmu_dt)
+            if not np.isfinite(dt0) or dt0 <= 0.0:
+                raise ValueError(f"FMUtoUICdrivetrain: invalid fmu_dt={dt0}.")
+
+            # Inputs for priming are consistent with the initial network operating point.
+            P_e_kW0 = float(Pe_uic_pu) * float(S_n_UIC) * 1e3
+            self._genpwr_kW_set = float(P_e_kW0)
+            #self.fmu.setReal([self.vrs['GenPwr']], [float(P_e_kW0)]) # unsure if these should be set here as the fmu should get readback vals the first iterations
+
+            Te_kNm_cmd0 = float(np.asarray(Te_pu).ravel()[0]) * float(np.asarray(self._T_base_Nm).ravel()[0]) / 1e3
+            self._gen_spdortrq_kNm_set = float(Te_kNm_cmd0)
+            #self.fmu.setReal([self.vrs['GenSpdOrTrq']], [float(Te_kNm_cmd0)])
+
+            self._elec_pwr_com_kW_last = float(self._elec_pwr_com_kW)
+            #self.fmu.setReal([self.vrs['ElecPwrCom']], [float(self._elec_pwr_com_kW_last)])
+
+            # Advance FMU from t=0 to t=dt0.
+            self.fmu.doStep(currentCommunicationPoint=0.0, communicationStepSize=dt0)
+            self._last_fmu_comm_point = 0.0
+            self._primed_at_init = True
+            
+            rot_rpm = float(self.fmu.getReal([self.vrs['RotSpeed']])[0])
+            self._omega_m_pu_meas = rot_rpm / self._omega_base_rpm
+            self._gen_speed_rpm_meas = float(self.fmu.getReal([self.vrs['GenSpeed']])[0])
+            self._gen_tq_kNm_meas = float(self.fmu.getReal([self.vrs['GenTq']])[0])
+
+        # Keep TOPS speed state initialization independent of FMU readback.
+        X['omega_e'] = self._gen_speed_rpm_meas / self._omega_base_rpm
 
         return
 
@@ -219,9 +253,9 @@ class FMUtoUICdrivetrain(DAEModel):
         X = self.local_view(x)
         par = self.par
 
-        omega_m = float(self._omega_m_pu_meas) # from OpenFAST
-        theta_s = float(np.asarray(X['theta_s']).ravel()[0]) # current tops state of shaft twist angle
         omega_e = float(np.asarray(X['omega_e']).ravel()[0]) # current tops state of generator speed
+        omega_m = omega_e if self._omega_m_pu_meas is None else float(self._omega_m_pu_meas) # from OpenFAST (cached)
+        theta_s = float(np.asarray(X['theta_s']).ravel()[0]) # current tops state of shaft twist angle
 
         # Electrical torque from power system:
         # P_e is in UIC p.u. on base S_n_UIC, convert to local p.u. on base S_n.
@@ -232,7 +266,7 @@ class FMUtoUICdrivetrain(DAEModel):
             raise ValueError(f"FMUtoUICdrivetrain: omega_e is not finite (omega_e={omega_e}).")
         eff = float(self._efficiency)
         Te_pu = Pe_pu / (eff * omega_e) if abs(omega_e) > 1e-6 else 0.0 # output Pe is scaled with powertrain efficiency
-        self._Te_pu_cmd = Te_pu # cache electrical torque command for next step
+        self._Te_pu_cmd = float(np.asarray(Te_pu).ravel()[0]) # cache electrical torque command for next step
 
         # shaft torque
         omega_s = omega_m - omega_e
@@ -277,14 +311,12 @@ class FMUtoUICdrivetrain(DAEModel):
     def P_ref(self, x, v):
         # Use cached OpenFAST outputs to avoid repeated FMU reads during one solver step.
         # (The DAE solver may call output functions multiple times per time step.)
+
         X = self.local_view(x)
         omega_e = float(np.asarray(X['omega_e']).ravel()[0])
-
-        P_kW  = (self._gen_tq_kNm_meas * omega_e * self._omega_base_rad_s)                        # since kN·m * rad/s / 1 = kW
-        # Convert to pu on S_n 
+        P_kW = float(self._gen_tq_kNm_meas) * omega_e * self._omega_base_rad_s   # (kN·m)*(rad/s) = kW
         S_n_MVA = float(np.asarray(self.S_n_UIC(x, v)).ravel()[0])
-        p_ref_pu = P_kW / (S_n_MVA * 1e3) # convert to pu on S_n base
-        p_ref_pu = p_ref_pu * self._efficiency # scale with powertrain efficiency: Pgrid = Pgen * efficiency
+        p_ref_pu = (P_kW / (S_n_MVA * 1e3)) * float(self._efficiency)
         return np.atleast_1d(p_ref_pu)
     
     def step_fmu(self, x, v, t, dt):
@@ -297,8 +329,7 @@ class FMUtoUICdrivetrain(DAEModel):
         P_e_uic_pu = float(np.asarray(self.P_e(x, v)).ravel()[0])
         S_n_uic_MVA = float(np.asarray(self.S_n_UIC(x, v)).ravel()[0])
         P_e_kW = P_e_uic_pu * S_n_uic_MVA * 1e3
-        self._genpwr_kW_set = float(P_e_kW)
-        self.fmu.setReal([self.vrs['GenPwr']], [float(P_e_kW)])
+        input_power_kW = float(P_e_kW)
 
         # Torque command from accepted (x, v): Te = Pe/(eff*omega_e) in local pu.
         Pe_pu = P_e_uic_pu * (S_n_uic_MVA / par['S_n'])
@@ -311,10 +342,21 @@ class FMUtoUICdrivetrain(DAEModel):
         # Send generator torque command (kN·m) into OpenFAST-FMU
         Te_kNm_cmd = (float(Te_pu)) * self._T_base_Nm / (1e3)
         input_torque = float(Te_kNm_cmd[0])
-        if t > 30.0:
-            input_torque = input_torque * 1.0
+
+        # Startup: echo measured FMU torque back as input for a few steps
+        # to avoid the FMU's internal offset compensation latching a non-zero bias.
+        if self._startup_echo_steps_left > 0:
+            # Read the FMU's current "ideal" torque directly right before sending the input.
+            # This is limited to the first few steps only, so the extra FMU read cost is negligible.
+            tq_ideal = float(self.fmu.getReal([self.vrs['GenTq']])[0])
+            if np.isfinite(tq_ideal):
+                input_torque = tq_ideal
+            # Keep GenPwr driven from TOPS (grid measurement) unless we explicitly want to echo power as well.
+            # (Computing an "ideal power" from torque requires a reliable GenSpeed sample; cached value may be None/stale.)
         self.fmu.setReal([self.vrs['GenSpdOrTrq']], [input_torque])
         self._gen_spdortrq_kNm_set = input_torque
+        self._genpwr_kW_set = input_power_kW
+        self.fmu.setReal([self.vrs['GenPwr']], [input_power_kW])
         
         # Demanded electrical power (kW) for controller.
         self._elec_pwr_com_kW_last = float(self._elec_pwr_com_kW)
@@ -325,12 +367,27 @@ class FMUtoUICdrivetrain(DAEModel):
         comm_point = float(t) - float(dt)
         if comm_point < -1e-12:
             raise ValueError(f"Invalid FMU communication point t-dt={comm_point} (t={t}, dt={dt}).")
+
+        # If we primed the FMU in init_from_connections() with doStep(0, dt),
+        # then the first runtime call occurs at t=dt with comm_point=0.
+        # In that case, skip doStep to avoid advancing 0->dt twice, but latch outputs so caches are set.
+        if self._primed_at_init and abs(comm_point) <= 1e-12:
+            rot_rpm = float(self.fmu.getReal([self.vrs['RotSpeed']])[0])
+            self._omega_m_pu_meas = rot_rpm / self._omega_base_rpm
+            self._gen_speed_rpm_meas = float(self.fmu.getReal([self.vrs['GenSpeed']])[0])
+            self._gen_tq_kNm_meas = float(self.fmu.getReal([self.vrs['GenTq']])[0])
+            self._primed_at_init = False
+            if self._startup_echo_steps_left > 0:
+                self._startup_echo_steps_left -= 1
+            return
         # check if the FMU time is monotone -> t+1 > t
         if self._last_fmu_comm_point is not None and comm_point < self._last_fmu_comm_point - 1e-12:
             raise ValueError(f"Non-monotone FMU time: {comm_point} < last {self._last_fmu_comm_point}.")
         self._last_fmu_comm_point = comm_point
 
         self.fmu.doStep(currentCommunicationPoint=comm_point, communicationStepSize=dt)
+        if self._startup_echo_steps_left > 0:
+            self._startup_echo_steps_left -= 1
 
         # Cache measurements for the next solver step
         rot_rpm = float(self.fmu.getReal([self.vrs['RotSpeed']])[0])

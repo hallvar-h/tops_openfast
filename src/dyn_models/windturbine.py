@@ -193,14 +193,16 @@ class WindTurbine(DAEModel):
         K = float(np.asarray(par['K']).ravel()[0])
 
         # Region 2 -> MPPT, pitch at minimum (typically 0)
-        # Solve P_aero(omega) = MPT(omega) for consistent init; fallback to u_start / u_rated
+        # Solve eta*P_aero(omega) = MPT(omega) for consistent init; fallback to u_start / u_rated
         if not hasattr(self, '_mpt_interp'):
             self._load_MPT_table()
+        eta = float(np.asarray(par['efficiency']).ravel()[0])
+        eta = eta if np.isfinite(eta) and eta > 0 else 1.0
         def _res(om):
             X['omega_m'] = om
             X['pitch_angle'] = 0.0
-            # MPT = electrical power; P_aero = electrical output, so solve p_aero = MPT
-            return float(self.P_aero(x_0, v_0).ravel()[0]) - float(self._mpt_interp(om * w_rated))
+            # MPT table is electrical power; aerodynamics provide mechanical power -> scale by efficiency.
+            return eta * float(self.P_aero(x_0, v_0).ravel()[0]) - float(self._mpt_interp(om * w_rated))
         try:
             omega_m_init_pu = brentq(_res, 0.05, 1.0) # scipy.optimize.brentq to finds where _res function is 0 -> omega_m_init_pu
         except ValueError:
@@ -311,6 +313,8 @@ class WindTurbine(DAEModel):
         R = float(np.asarray(par['R']).ravel()[0])
         rho = float(np.asarray(par['rho']).ravel()[0])
         S_n = float(np.asarray(par['S_n']).ravel()[0])
+        eta = float(np.asarray(par['efficiency'] if 'efficiency' in par.dtype.names else par['gb_gen_efficiency']).ravel()[0])
+        eta = eta if np.isfinite(eta) and eta > 0 else 1.0
 
         def _res(om):
             omega_rad = om * w_rated
@@ -319,7 +323,7 @@ class WindTurbine(DAEModel):
             tsr_c = np.clip(tsr, self._cp_interp.grid[1].min(), self._cp_interp.grid[1].max())
             Cp = float(self._cp_interp(np.array([pa, tsr_c]))[0])
             P_aero = 0.5 * rho * np.pi * R**2 * wind_speed_mps**3 * Cp / (S_n * 1e6)
-            return P_aero - float(self._mpt_interp(omega_rad))
+            return eta * P_aero - float(self._mpt_interp(omega_rad))
 
         try:
             omega_init = float(brentq(_res, 0.05, 1.0))
@@ -448,15 +452,15 @@ class WindTurbine(DAEModel):
 
     def wind_speed_init(self):
         """Wind speed at t=0 (m/s). No state needed. Use for power flow / init."""
-        return 13.0 #float(self._wind_interp(0))
+        return 8.0 #float(self._wind_interp(0))
 
     def wind_speed(self, x, v):
         """Returns wind speed in m/s. Uses _sim_time (s) when set by sim loop, else 0 (init)."""
         t = getattr(self, '_sim_time', 0)
         if t < 120:
-            return 13.0
+            return 8.0
         else:
-            return 14.0
+            return 9.0
         """ if t < 30:
             return 8.0
         elif t < 60:

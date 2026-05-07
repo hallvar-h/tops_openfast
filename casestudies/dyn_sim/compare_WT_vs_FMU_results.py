@@ -215,7 +215,7 @@ def main(argv: list[str] | None = None):
     ax_power[1].grid(True, alpha=0.3)
     ax_power[1].legend(loc='best', fontsize=8)
     _plain_y(ax_power[1])
-
+ 
     # Terminal voltage magnitude
     if 'v_bus_pu' in wt_a.columns and 'v_bus_pu' in fmu_a.columns:
         ax_power[2].plot(t_fmu, wt_a['v_bus_pu'], label='WT: |V_t|', color=PLOT_COLORS[0], linewidth=1.4)
