@@ -1,6 +1,5 @@
 import os
 
-
 def load():
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     # Pick the FMU that actually exists (prefer OpenFAST/fast.fmu, otherwise fall back).
@@ -43,20 +42,22 @@ def load():
         'vsc': {
             'UIC_sig': [
                 ['name', 'bus', 'S_n', 'V_n', 'v_ref', 'p_ref', 'q_ref',   'Ki',   'Kv',    'xf', 'perfect_tracking', 'T_filter'],
-                ['UIC1', 'B2',    20,   22,      1.0,     0.5,      0.0,     0.05,     0.0,    0.1,        1,          0.1   ] # PQ bus for consistent q_ref=0 init
+                ['UIC1', 'B2',    20,   22,      1.0,     0.5,      0.0,     0.03,     0.0,    0.1,        1,          0.1   ] # PQ bus for consistent q_ref=0 init
             ],
         },
 
         'FMUtoUICdrivetrain': {
             'FMUtoUICdrivetrain': [
                 ['name', 'UIC', 'S_n', 'V_n', 'FMU_path', 'fmu_filename', 'control_mode', 'wd_path', 'openfast_test_dir', 'testNr',
-                 'J_m', 'J_e', 'K', 'D', 'omega_m_rated', 'fmu_dt', 'ElecPwrCom_kW', 'efficiency'],
+                 'J_m', 'J_e', 'K', 'D', 'omega_m_rated', 'fmu_dt', 'ElecPwrCom_kW', 'efficiency',
+                 'speed_lpf_type', 'speed_lpf_corner_rad_s', 'speed_lpf_damping'],
                 ['FMUtoUICdrivetrain1', 'UIC1', 15, 22, fmu_path, 'fast.fmu', 3,
                  os.path.join(project_root, 'openfast_fmu', 'resources', 'wd.txt'),
                  # Directory that CONTAINS the OpenFAST case folders (e.g. test1002/).
                  # The FMU selects the case via the parameter testNr=1002.
                  project_root, 1002,
-                 352460500., 1836784., 69737644900./100., 35697187.234657425, 7.559987120819503, 0.01, 20000.0, 0.95756],
+                 352460500., 1836784., 69737644900./100., 35697187.234657425/10., 7.559987120819503, 0.01, 20000.0, 0.95756,
+                 2, 1.00810, 0.70000],
             ],
         },
     }

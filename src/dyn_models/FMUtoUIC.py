@@ -116,7 +116,7 @@ class FMUtoUIC(DAEModel):
     FMU_OUTPUT_NAMES = [
         'Time', 'HSShftTq', 'GenTq', 'Wind1VelX', 'RtVAvgxh', 'BldPitch1',
         'NacYaw', 'RefGenSpd', 'GenSpeed', 'RotSpeed', 'LSSGagPxa', 'Azimuth',
-        'GenAccel', 'YawBrTAxp', 'YawBrTAyp',
+        'GenAccel', 'YawBrTAxp', 'YawBrTAyp', 'RtAeroMxh',
     ]
 
     def get_fmu_outputs(self):

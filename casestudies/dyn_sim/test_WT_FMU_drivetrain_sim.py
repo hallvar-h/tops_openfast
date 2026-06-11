@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(script_dir))
@@ -17,12 +18,19 @@ import src.solvers as dps_sol
 import importlib
 importlib.reload(dps)
 
+from casestudies.dyn_sim.thesis_plot_style import save_single_model_multi, save_single_model_trace, legend_label
+
 def _safe_legend(ax, *args, **kwargs):
     handles, labels = ax.get_legend_handles_labels()
     if handles:
         ax.legend(*args, **kwargs)
 
 if __name__ == '__main__':
+    _ap = argparse.ArgumentParser(add_help=False)
+    _ap.add_argument('--no-show', action='store_true')
+    _ap.add_argument('--no-thesis-plots', action='store_true')
+    _cli, _ = _ap.parse_known_args()
+
     t_start_wall = time.perf_counter()
     # Model loading and initialisation
     print("Loading model data...", flush=True)
@@ -33,7 +41,7 @@ if __name__ == '__main__':
 
     # UIC p_ref for power flow (FMU provides it during dynamics via connection)
     uic_model = ps.vsc['UIC_sig']
-    uic_model.par['p_ref'][:] = 0.6471503597375907/2 #0.75
+    uic_model.par['p_ref'][:] = 0.6471503597375907/2 
     uic_model.par['q_ref'][:] = 0.
 
     t0 = time.perf_counter()
@@ -53,10 +61,11 @@ if __name__ == '__main__':
     result_dict = defaultdict(list)
     # Allow quick A/B interface tests without changing the file.
     # Example: set FMU_T_END=20 to run 20 seconds.xx
-    t_end = float(os.getenv('FMU_T_END', '240.0'))
+    t_end = float(os.getenv('FMU_T_END', '90.'))
     dt = 0.01
     # Use dt=0.01 to match OpenFAST FMU (canHandleVariableCommunicationStepSize=false)
-    sol = dps_sol.ModifiedEulerDAE(ps.state_derivatives, ps.solve_algebraic, 0.0, x0, t_end, max_step=dt)
+    f_ode = lambda t_, x_: ps.state_derivatives(t_, x_, ps.solve_algebraic(t_, x_))
+    sol = dps_sol.SimpleRK4(f_ode, 0.0, x0, t_end, max_step=dt)
     # Keep explicit current state variables (used for FMU-first co-simulation ordering).
     x = x0
     v = v0
@@ -111,7 +120,12 @@ if __name__ == '__main__':
     # Do not assign/plot FMU outputs at t=0 before we've latched a valid post-step FMU sample.
     # Seed an "all-NaN" output row so exported columns exist and plots clearly show missing values.
     if fmu_mdl is not None and hasattr(fmu_mdl, 'FMU_OUTPUT_NAMES'):
-        d0 = {name: np.nan for name in getattr(fmu_mdl, 'FMU_OUTPUT_NAMES', [])}
+        # Only seed outputs the FMU actually exposes (modelDescription.xml / self.vrs).
+        d0 = {
+            name: np.nan
+            for name in getattr(fmu_mdl, 'FMU_OUTPUT_NAMES', [])
+            if name in getattr(fmu_mdl, 'vrs', {})
+        }
         d0['Time'] = float(t)
         d0['Time_fmu'] = np.nan
         fmu_outputs_stored.append(d0)
@@ -185,9 +199,9 @@ if __name__ == '__main__':
             ps.y_bus_red_mod[(sc_bus_idx,) * 2] = 0
 
         sol.step()
-        x = sol.y
-        v = sol.v
+        x = sol.x
         t = sol.t
+        v = ps.solve_algebraic(t, x)
 
         # Step the FMU after the network/DAE step (more stable explicit coupling).
         for mdl in fmu_models:
@@ -333,293 +347,107 @@ if __name__ == '__main__':
     out_df.to_csv(out_path, index=False)
     print(f"\nResults saved to {out_path} ({len(out_df.columns)} columns)")
 
-    # Consistent color palette used across all figures in this script.
-    # Keep ordering stable: [TOPS, command/ref, OpenFAST mech, OpenFAST/derived].
-    PLOT_COLORS = ['blue', '#FF1493', 'orange', 'green']
-
-    # Save one plot per exported signal (easy debugging)
-    plots_dir = os.path.join(project_root, 'casestudies', 'dyn_sim', 'logs', 'fmu_drivetrain', 'plots')
-    os.makedirs(plots_dir, exist_ok=True)
-
-    for col in out_df.columns:
-        if col == 't':
-            continue
-        series = out_df[col]
-        # Skip fully-empty / all-NaN columns
-        if series.isna().all():
-            continue
-        fig, ax = plt.subplots(1, 1, figsize=(9, 3))
-        ax.plot(out_df['t'], series, linewidth=1.0, color=PLOT_COLORS[0])
-        ax.set_title(col)
-        ax.set_xlabel('Time (s)')
-        ax.grid(True, alpha=0.3)
-        fig.tight_layout()
-        safe = ''.join(ch if ch.isalnum() or ch in ('-', '_', '.') else '_' for ch in str(col))
-        fig.savefig(os.path.join(plots_dir, f"{safe}.png"), dpi=150)
-        plt.close(fig)
-
-    # Plot: power and drivetrain states
     df = pd.DataFrame(fmu_outputs_stored) if fmu_outputs_stored else None
-
-    fig1, axes1 = plt.subplots(3, 1, sharex=True, figsize=(9, 11))
-    fig1.suptitle('Power system & drivetrain (TOPS-side)', fontsize=12)
-
-    axes1[0].plot(t_stored, v_bus, label='|V_t| (UIC terminal, magnitude)', color=PLOT_COLORS[0], linewidth=1.5)
-    axes1[0].set_ylabel('|V_t| (p.u.)')
-    _safe_legend(axes1[0], loc='best', fontsize=8)
-    axes1[0].grid(True, alpha=0.3)
-    # Avoid confusing "1e-5 + 1" axis offset; show actual p.u. values.
-    axes1[0].ticklabel_format(axis='y', style='plain', useOffset=False)
-
-    # Drivetrain omega subplot: TOPS omega_e + OpenFAST-reported speeds (both in pu)
-    key = ('FMUtoUICdrivetrain1', 'omega_e')
-    if key in result.columns:
-        axes1[1].plot(t_stored, result[key], label="TOPS omega_e", color=PLOT_COLORS[0], linewidth=1.2)
-
-    # OpenFAST outputs (FMU): RotSpeed/GenSpeed are rpm -> convert to pu using omega_m_rated base (rpm)
     omega_base_rpm = None
     if fmu_mdl is not None and hasattr(fmu_mdl, 'par') and 'omega_m_rated' in fmu_mdl.par.dtype.names:
         omega_base_rpm = float(np.asarray(fmu_mdl.par['omega_m_rated']).ravel()[0])
-    if omega_base_rpm is not None and omega_base_rpm > 0 and df is not None:
-        if 'RotSpeed' in df.columns:
-            axes1[1].plot(
-                t_stored,
-                df['RotSpeed'] / omega_base_rpm,
-                '--',
-                label='OpenFAST omega_m (RotSpeed, p.u.)',
-                color=PLOT_COLORS[2],
-                linewidth=1.2,
-                alpha=0.9,
-            )
-        if 'GenSpeed' in df.columns:
-            axes1[1].plot(
-                t_stored,
-                df['GenSpeed'] / omega_base_rpm,
-                ':',
-                label='OpenFAST omega_e (GenSpeed, p.u.)',
-                color=PLOT_COLORS[3],
-                linewidth=1.2,
-                alpha=0.9,
+
+    if not _cli.no_thesis_plots:
+        thesis_dir = os.path.join(
+            project_root, 'casestudies', 'dyn_sim', 'logs', 'fmu_drivetrain', 'plots', 'thesis'
+        )
+        os.makedirs(thesis_dir, exist_ok=True)
+        _show = not _cli.no_show
+        t_np = np.asarray(t_stored, dtype=float)
+
+        if 'v_bus_pu' in out_df.columns:
+            save_single_model_trace(
+                thesis_dir, 'coupled_Vt_pu', 'UIC terminal voltage', t_np,
+                out_df['v_bus_pu'].to_numpy(dtype=float), ylabel='Voltage magnitude (p.u.)',
+                model='coupled', var_name='v_bus_pu', show=_show,
             )
 
-    axes1[1].set_ylabel('Omega (p.u.)')
-    _safe_legend(axes1[1], loc='best', fontsize=8)
-    axes1[1].grid(True, alpha=0.3)
-
-    # Drivetrain twist subplot
-    key = ('FMUtoUICdrivetrain1', 'theta_s')
-    if key in result.columns:
-        axes1[2].plot(t_stored, result[key], label="TOPS theta_s", color=PLOT_COLORS[0], linewidth=1.2)
-    axes1[2].set_ylabel('Shaft twist theta_s (p.u.)')
-    axes1[2].set_xlabel('Time (s)')
-    _safe_legend(axes1[2], loc='best', fontsize=8)
-    axes1[2].grid(True, alpha=0.3)
-
-    fig1.tight_layout()
-
-    # Figure 1b: OpenFAST / DLL-interface signals (for debugging who regulates speed/torque)
-    # Include wind speed so scenario differences are visible.
-    fig1b, axes1b = plt.subplots(4, 1, sharex=True, figsize=(9, 12))
-    fig1b.suptitle('OpenFAST controller signals (FMU outputs)', fontsize=12)
-
-    if df is not None:
-        # Wind
-        if 'Wind1VelX' in df.columns:
-            axes1b[0].plot(t_stored, df['Wind1VelX'], label='Wind1VelX (m/s)', color=PLOT_COLORS[1], linewidth=1.2)
-        if 'RtVAvgxh' in df.columns:
-            axes1b[0].plot(t_stored, df['RtVAvgxh'], '--', label='RtVAvgxh (m/s)', color=PLOT_COLORS[2], linewidth=1.0)
-        axes1b[0].set_ylabel('Wind (m/s)')
-        _safe_legend(axes1b[0], loc='best', fontsize=8)
-        axes1b[0].grid(True, alpha=0.3)
-
-        # Pitch
-        if 'BldPitch1' in df.columns:
-            axes1b[1].plot(t_stored, df['BldPitch1'], label='Blade pitch 1 (deg)', color=PLOT_COLORS[0], linewidth=1.2)
-        axes1b[1].set_ylabel('Pitch (deg)')
-        _safe_legend(axes1b[1], loc='best', fontsize=8)
-        axes1b[1].grid(True, alpha=0.3)
-
-        # Speed reference and measured speeds (all in p.u. on omega_base)
-        if omega_base_rpm is not None and omega_base_rpm > 0:
-            if 'RefGenSpd' in df.columns:
-                axes1b[2].plot(
-                    t_stored,
-                    df['RefGenSpd'] / omega_base_rpm,
-                    label='RefGenSpd (controller ref, p.u.)',
-                    color=PLOT_COLORS[1],
-                    linewidth=1.2,
-                )
+        speed_traces = []
+        oe_key = ('FMUtoUICdrivetrain1', 'omega_e')
+        if oe_key in result.columns:
+            speed_traces.append((
+                result[oe_key].to_numpy(dtype=float),
+                legend_label('omega_e'),
+                None,
+            ))
+        if omega_base_rpm and omega_base_rpm > 0 and df is not None:
             if 'GenSpeed' in df.columns:
-                axes1b[2].plot(
-                    t_stored,
-                    df['GenSpeed'] / omega_base_rpm,
-                    '--',
-                    label='GenSpeed (meas, p.u.)',
-                    color=PLOT_COLORS[3],
-                    linewidth=1.0,
-                )
+                speed_traces.append((
+                    df['GenSpeed'].to_numpy(dtype=float) / omega_base_rpm,
+                    legend_label('GenSpeed'),
+                    None,
+                ))
             if 'RotSpeed' in df.columns:
-                axes1b[2].plot(
-                    t_stored,
-                    df['RotSpeed'] / omega_base_rpm,
-                    ':',
-                    label='RotSpeed (meas, p.u.)',
-                    color=PLOT_COLORS[2],
-                    linewidth=1.0,
+                speed_traces.append((
+                    df['RotSpeed'].to_numpy(dtype=float) / omega_base_rpm,
+                    legend_label('RotSpeed'),
+                    None,
+                ))
+        if speed_traces:
+            save_single_model_multi(
+                thesis_dir, 'coupled_speeds_pu', 'Drivetrain speeds', t_np,
+                speed_traces, ylabel=r'Speed (p.u., $\omega_{m,\mathrm{rated}}$ base)',
+                model='coupled', show=_show,
+            )
+
+        th_key = ('FMUtoUICdrivetrain1', 'theta_s')
+        if th_key in result.columns:
+            save_single_model_trace(
+                thesis_dir, 'coupled_theta_s_pu', 'Shaft twist', t_np,
+                result[th_key].to_numpy(dtype=float), ylabel=r'Shaft twist $\theta_s$ (p.u.)',
+                model='coupled', var_name='theta_s', show=_show,
+            )
+
+        if df is not None:
+            wind_tr = []
+            if 'Wind1VelX' in df.columns:
+                wind_tr.append((
+                    df['Wind1VelX'].to_numpy(dtype=float),
+                    legend_label('Wind1VelX'),
+                    None,
+                ))
+            if 'RtVAvgxh' in df.columns:
+                wind_tr.append((
+                    df['RtVAvgxh'].to_numpy(dtype=float),
+                    legend_label('RtVAvgxh'),
+                    None,
+                ))
+            if wind_tr:
+                save_single_model_multi(
+                    thesis_dir, 'coupled_wind_mps', 'Wind speed', t_np,
+                    wind_tr, ylabel='Wind speed (m/s)', model='coupled', show=_show,
                 )
-        axes1b[2].set_ylabel('Speed (p.u.)')
-        _safe_legend(axes1b[2], loc='best', fontsize=8)
-        axes1b[2].grid(True, alpha=0.3)
-
-        # Torques (kN·m). Note: GenSpdOrTrq_set_kNm is the *exact* value sent to the FMU input
-        # and may have an opposite sign convention to OpenFAST-reported torques.
-        if 'GenTq' in df.columns:
-            axes1b[3].plot(t_stored, df['GenTq'], label='GenTq (kN·m)', color=PLOT_COLORS[3], linewidth=1.2)
-        if 'HSShftTq' in df.columns:
-            axes1b[3].plot(
-                t_stored, df['HSShftTq'], '--', label='HSShftTq (kN·m)', color=PLOT_COLORS[2], linewidth=1.0
-            )
-        if 'GenSpdOrTrq_set_kNm' in out_df.columns:
-            axes1b[3].plot(
-                t_stored,
-                out_df['GenSpdOrTrq_set_kNm'],
-                ':',
-                label='GenSpdOrTrq sent (kN·m)',
-                color=PLOT_COLORS[1],
-                linewidth=1.0,
-                alpha=0.9,
-            )
-        if 'Te_cmd_kNm' in out_df.columns:
-            axes1b[3].plot(
-                t_stored,
-                out_df['Te_cmd_kNm'],
-                '-.',
-                label='Te_cmd (TOPS, kN·m)',
-                color='black',
-                linewidth=1.0,
-                alpha=0.8,
-            )
-        axes1b[3].set_ylabel('Torque (kN·m)')
-        axes1b[3].set_xlabel('Time (s)')
-        _safe_legend(axes1b[3], loc='best', fontsize=8)
-        axes1b[3].grid(True, alpha=0.3)
-
-    fig1b.tight_layout()
-
-    # Figure 2: power + reactive power + torques (TOPS-side drivetrain)
-    fig2, axes2 = plt.subplots(3, 1, sharex=True, figsize=(9, 10))
-    fig2.suptitle('Power & torques (TOPS-side drivetrain)', fontsize=12)
-
-    # Power (system side, already in sys pu in this script)
-    axes2[0].plot(t_stored, out_df['P_e_sys_pu'], label='P_e (sys pu)', color=PLOT_COLORS[1], linewidth=1.5)
-    axes2[0].plot(t_stored, out_df['P_ref_sys_pu'], '--', label='P_ref (sys pu)', color=PLOT_COLORS[0], linewidth=1.5)
-    axes2[0].set_ylabel('Power (p.u.)')
-    _safe_legend(axes2[0], loc='best', fontsize=8)
-    axes2[0].grid(True, alpha=0.3)
-
-    axes2[1].plot(
-        t_stored,
-        out_df['Q_uic_bus_actual_sys_pu'],
-        label='Q (UIC bus, sys pu)',
-        color=PLOT_COLORS[1],
-        linewidth=1.5,
-    )
-    axes2[1].plot(
-        t_stored,
-        out_df['Q_uic_bus_ref_sys_pu'],
-        '--',
-        label='Q_ref (UIC bus, sys pu)',
-        color=PLOT_COLORS[2],
-        linewidth=1.5,
-    )
-    axes2[1].set_ylabel('Q (p.u.)')
-    _safe_legend(axes2[1], loc='best', fontsize=8)
-    axes2[1].grid(True, alpha=0.3)
-
-    # Torques (all in local pu on drivetrain base)
-    if fmu_mdl is not None and df is not None:
-        eff = float(getattr(fmu_mdl, '_efficiency', 1.0))
-        if not np.isfinite(eff) or eff <= 0.0:
-            eff = 1.0
-
-        # Shaft torque from TOPS states: T_shaft = K*theta_s + D*(omega_m-omega_e) (pu)
-        if hasattr(fmu_mdl, 'par') and 'K' in fmu_mdl.par.dtype.names and 'D' in fmu_mdl.par.dtype.names:
-            theta_key = ('FMUtoUICdrivetrain1', 'theta_s')
-            omega_e_key = ('FMUtoUICdrivetrain1', 'omega_e')
-            if (
-                theta_key in result.columns
-                and omega_e_key in result.columns
-                and 'omega_m_pu_meas' in out_df.columns
-            ):
-                K_pu = float(np.asarray(fmu_mdl.par['K']).ravel()[0])
-                D_pu = float(np.asarray(fmu_mdl.par['D']).ravel()[0])
-                theta_s_arr = result[theta_key].to_numpy(dtype=float)
-                omega_e_arr = result[omega_e_key].to_numpy(dtype=float)
-                omega_m_arr = out_df['omega_m_pu_meas'].to_numpy(dtype=float)
-                Tshaft_pu = K_pu * theta_s_arr + D_pu * (omega_m_arr - omega_e_arr)
-                axes2[2].plot(
-                    t_stored,
-                    Tshaft_pu,
-                    label='T_shaft (TOPS)',
-                    color=PLOT_COLORS[0],
-                    linewidth=1.4,
+            if 'BldPitch1' in df.columns:
+                save_single_model_trace(
+                    thesis_dir, 'coupled_pitch_deg', 'Blade pitch angle', t_np,
+                    df['BldPitch1'].to_numpy(dtype=float), ylabel='Pitch angle (deg)',
+                    model='coupled', var_name='BldPitch1', show=_show,
                 )
 
-        # Mechanical torque output from OpenFAST (HSShftTq in kN·m) -> pu on same base
-        if hasattr(fmu_mdl, '_T_base_Nm') and fmu_mdl._T_base_Nm and 'HSShftTq' in df.columns:
-            T_base_Nm = float(np.asarray(fmu_mdl._T_base_Nm).ravel()[0])
-            Tmech_of_pu = (df['HSShftTq'].to_numpy(dtype=float) * 1e3) / T_base_Nm
-            axes2[2].plot(
-                t_stored,
-                Tmech_of_pu,
-                label='T_mech (OpenFAST HSShftTq)',
-                color=PLOT_COLORS[2],
-                linewidth=1.2,
-                alpha=0.9,
-            )
+        save_single_model_multi(
+            thesis_dir, 'coupled_P_e_ref_pu', 'Electrical power', t_np,
+            [
+                (out_df['P_e_sys_pu'].to_numpy(dtype=float), legend_label('P_e_sys_pu'), None),
+                (out_df['P_ref_sys_pu'].to_numpy(dtype=float), legend_label('P_ref_sys_pu'), '--'),
+            ],
+            ylabel='Power (p.u., system base)', model='coupled', show=_show,
+        )
+        save_single_model_multi(
+            thesis_dir, 'coupled_Q_uic_bus_pu', 'Reactive power at UIC bus', t_np,
+            [
+                (out_df['Q_uic_bus_actual_sys_pu'].to_numpy(dtype=float), legend_label('Q_uic_bus_actual_sys_pu'), None),
+                (out_df['Q_uic_bus_ref_sys_pu'].to_numpy(dtype=float), legend_label('Q_uic_bus_ref_sys_pu'), '--'),
+            ],
+            ylabel='Reactive power (p.u., system base)', model='coupled', show=_show,
+        )
 
-        # Torque implied by grid electrical power:
-        # - Electrical output torque:   T_e_out = P_e/omega_e
-        # - Torque used by FMUtoUICdrivetrain (matches its current implementation):
-        #     Te_cmd = P_e/(efficiency*omega_e)
-        S_n_loc = float(np.asarray(fmu_mdl.par['S_n']).ravel()[0]) if hasattr(fmu_mdl, 'par') and 'S_n' in fmu_mdl.par.dtype.names else None
-        if S_n_loc is not None and S_n_loc > 0:
-            # P_e_stored is in sys pu: P_e_stored = P_e_uic_pu * (S_n_uic/sys_s_n)
-            P_e_uic_pu_arr = np.asarray(P_e_stored, dtype=float) * (sys_s_n / uic_s_n)
-            Pe_loc_pu_arr = P_e_uic_pu_arr * (uic_s_n / float(S_n_loc))
-            omega_e_key = ('FMUtoUICdrivetrain1', 'omega_e')
-            if omega_e_key in result.columns:
-                omega_e_arr = result[omega_e_key].to_numpy(dtype=float)
-                # Match drivetrain model logic exactly: divide if omega != 0 else 0
-                Te_out_pu = np.zeros_like(omega_e_arr, dtype=float)
-                np.divide(Pe_loc_pu_arr, omega_e_arr, out=Te_out_pu, where=(omega_e_arr != 0.0))
-                axes2[2].plot(
-                    t_stored,
-                    Te_out_pu,
-                    '--',
-                    label='T_e_out (grid: P_e/omega_e)',
-                    color=PLOT_COLORS[3],
-                    linewidth=1.2,
-                    alpha=0.9,
-                )
-                # Use the logged command from the wrapper (this is what was actually sent to the FMU)
-                # to avoid any base/sign mismatch from recomputing it here.
-                if 'Te_cmd_pu' in out_df.columns:
-                    axes2[2].plot(
-                        t_stored,
-                        out_df['Te_cmd_pu'].to_numpy(dtype=float),
-                        '--',
-                        label='T_e_cmd (logged from wrapper)',
-                        color=PLOT_COLORS[1],
-                        linewidth=1.2,
-                        alpha=0.9,
-                    )
+        print(f"Thesis figures saved to {thesis_dir}")
 
-    axes2[2].set_ylabel('Torque (p.u. on WT base)')
-    axes2[2].set_xlabel('Time (s)')
-    _safe_legend(axes2[2], loc='best', fontsize=8)
-    axes2[2].grid(True, alpha=0.3)
-
-    fig2.tight_layout()
     print(f"\nSimulation took {time.perf_counter() - t_start_wall:.2f} seconds.")
-    plt.show()
+    if not _cli.no_show and not _cli.no_thesis_plots:
+        plt.show(block=False)

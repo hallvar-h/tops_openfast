@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 # Add project root to Python path
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(script_dir))
@@ -11,12 +12,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import time
+from casestudies.dyn_sim.thesis_plot_style import save_single_model_multi, save_single_model_trace, legend_label
 import src.dynamic as dps
 import src.solvers as dps_sol
 import importlib
 importlib.reload(dps)
 
 if __name__ == '__main__':
+    _ap = argparse.ArgumentParser(add_help=False)
+    _ap.add_argument('--no-show', action='store_true')
+    _ap.add_argument('--no-thesis-plots', action='store_true')
+    _cli, _ = _ap.parse_known_args()
+
     t_start_wall = time.perf_counter()
 
     # region Model loading and initialisation
@@ -47,10 +54,13 @@ if __name__ == '__main__':
 
     t = 0
     result_dict = defaultdict(list)
-    t_end = 240 # Simulation time
+    t_end = 90. # Simulation time
 
     # Solver
-    sol = dps_sol.ModifiedEulerDAE(ps.state_derivatives, ps.solve_algebraic, 0, x0, t_end, max_step=1e-2)
+    # Test explicit RK4 on the differential states. Since this is a DAE, solve algebraics explicitly inside f_ode.
+    dt = 0.01
+    f_ode = lambda t_, x_: ps.state_derivatives(t_, x_, ps.solve_algebraic(t_, x_))
+    sol = dps_sol.SimpleRK4(f_ode, 0.0, x0, t_end, max_step=dt)
     # endregion
 
     v_bus_mag = np.abs(ps.v_0)
@@ -69,6 +79,7 @@ if __name__ == '__main__':
     v_bus = []
     omega_m_hist = []
     omega_e_hist = []
+    T_mpt_wt_pu_hist = []
     pitch_angle_hist = []
     wind_speed_hist = []
     i_a_mag_hist = []
@@ -94,6 +105,14 @@ if __name__ == '__main__':
     uic_s_n = uic_model.par['S_n'][0]
     wt_s_n = wt_model.par['S_n'][0]
     gen_s_n = gen_model.par['S_n'][0]
+    omega_rated_rad_s = float(np.asarray(wt_model.par['omega_m_rated']).ravel()[0])
+
+    def _append_mpt_torque(wt_states):
+        om_e_pu = float(np.asarray(wt_states['omega_e']).ravel()[0])
+        T_mpt_wt_pu_hist.append(
+            float(wt_model._mpt_torque_mech_pu(om_e_pu * omega_rated_rad_s))
+        )
+
     v_t_uic = uic_model.v_t(x0, v0)[0]
     v_bus.append(np.abs(v_t_uic))
     P_aero_local = wt_model.P_aero(x0, v0)[0]
@@ -127,6 +146,7 @@ if __name__ == '__main__':
     wt_states = wt_model.local_view(x0)
     omega_m_hist.append(wt_states['omega_m'][0])
     omega_e_hist.append(wt_states['omega_e'][0])
+    _append_mpt_torque(wt_states)
     pitch_angle_val = wt_states['pitch_angle'][0] if 'pitch_angle' in wt_states.dtype.names else 0.0
     pitch_angle_hist.append(float(pitch_angle_val * 180 / np.pi))
     wind_speed_hist.append(wt_model.wind_speed(x0, v0))
@@ -140,11 +160,14 @@ if __name__ == '__main__':
     y_sc = 1e6
     sc_flag = False
     while t < t_end:
+        # Progress indicator (single-line percentage)
+        sys.stdout.write("\r%d%%" % int((sol.t / t_end) * 100))
+        sys.stdout.flush()
         wt_model._sim_time = sol.t  # set before step so WT wind lookup uses correct time
         result = sol.step()
-        x = sol.y
-        v = sol.v
+        x = sol.x
         t = sol.t
+        v = ps.solve_algebraic(t, x)
         wt_model._sim_time = t  # update for storage/plot
 
         sc_bus_idx = ps.vsc['UIC_sig'].bus_idx_red['terminal'][0]
@@ -195,6 +218,7 @@ if __name__ == '__main__':
         wt_states = wt_model.local_view(x)
         omega_m_hist.append(wt_states['omega_m'][0])
         omega_e_hist.append(wt_states['omega_e'][0])
+        _append_mpt_torque(wt_states)
         # Pitch angle is stored as state variable
         pitch_angle_val = wt_states['pitch_angle'][0] if 'pitch_angle' in wt_states.dtype.names else 0.0
         pitch_angle_hist.append(float(pitch_angle_val * 180 / np.pi))  # Convert to degrees and ensure scalar
@@ -205,6 +229,9 @@ if __name__ == '__main__':
         i_a_mag_hist.append(np.abs(i_a))
         i_a_angle_hist.append(np.angle(i_a) * 180 / np.pi)  # Convert to degrees
         # endregion
+
+    sys.stdout.write("\r100%\n")
+    sys.stdout.flush()
 
     # Convert dict to pandas dataframe
     result = pd.DataFrame(result_dict, columns=pd.MultiIndex.from_tuples(result_dict))
@@ -221,6 +248,7 @@ if __name__ == '__main__':
             'omega_base_rpm': float(omega_base_rpm),
             'omega_m_pu': np.asarray(omega_m_hist, dtype=float),
             'omega_e_pu': np.asarray(omega_e_hist, dtype=float),
+            'T_mpt_wt_pu': np.asarray(T_mpt_wt_pu_hist, dtype=float),
             'pitch_deg': np.asarray(pitch_angle_hist, dtype=float),
             'wind_speed_mps': np.asarray(wind_speed_hist, dtype=float),
             'P_aero_sys_pu': np.asarray(P_aero_stored, dtype=float),
@@ -249,178 +277,109 @@ if __name__ == '__main__':
     out_df.to_csv(out_path, index=False)
     print(f"\nResults saved to {out_path} ({len(out_df.columns)} columns)")
 
-    # region Plotting
+    # region Plotting (thesis: one signal group per PNG)
     t_stored = result[('Global', 't')]
-    # All plot series have same length: index 0 = initial point (t0, x0, v0), then one per solver step
     n_pts = len(t_stored)
     assert n_pts == len(Q_uic_bus_actual) == len(P_uic_bus_actual) == len(P_ref_instant_stored), "plot series length mismatch"
 
-    # Helper: avoid confusing axis offset/scientific notation on near-constant traces
-    from matplotlib.ticker import ScalarFormatter
-    def _plain_y(ax):
-        fmt = ScalarFormatter(useOffset=False)
-        fmt.set_scientific(False)
-        ax.yaxis.set_major_formatter(fmt)
-
-    def _set_ylim_from_series(ax, *series, pad_frac=0.05, pad_abs=1e-3, floor0=False):
-        y = np.concatenate([np.asarray(s, dtype=float).ravel() for s in series if s is not None])
-        y = y[np.isfinite(y)]
-        if y.size == 0:
-            return
-        ymin = float(np.min(y))
-        ymax = float(np.max(y))
-        if ymax > ymin:
-            pad = pad_frac * (ymax - ymin)
-        else:
-            pad = pad_abs
-        lo = ymin - pad
-        hi = ymax + pad
-        if floor0:
-            lo = max(0.0, lo)
-        ax.set_ylim(lo, hi)
-
-    # First figure: Wind Turbine.
-    fig1, ax1 = plt.subplots(3, 1, sharex=True, figsize=(9, 8))
-    fig1.suptitle('Wind Turbine', fontsize=14)
-
-    # Rotational and electrical speeds
-    ax1[0].plot(t_stored, omega_m_hist, label='ω_m (mechanical speed)', color='blue', linewidth=1.5)
-    ax1[0].plot(t_stored, omega_e_hist, label='ω_e (electrical speed)', color='#FF1493', linewidth=1.5)  # deeppink
-    ax1[0].set_ylabel('Speed (p.u., base ω_m_rated)')
-    ax1[0].legend(loc='best')
-    ax1[0].grid(True, alpha=0.3)
-    _plain_y(ax1[0])
-    # Use a fixed engineering range so tiny numerical drift is not visually amplified
-    ax1[0].set_ylim(0.95, 1.05)
-
-    # Pitch angle
-    ax1[1].plot(t_stored, pitch_angle_hist, label='Pitch angle', color='blue', linewidth=1.5)
-    ax1[1].set_ylabel('Pitch angle (deg)')
-    ax1[1].legend(loc='best')
-    ax1[1].grid(True, alpha=0.3)
-    _plain_y(ax1[1])
-    # Keep pitch scale readable; steady-state values should not “zoom in”
-    ax1[1].set_ylim(0.0, 10.0)
-
-    # Wind speed
-    ax1[2].plot(t_stored, wind_speed_hist, label='Wind speed', color='#FF1493', linewidth=1.5)  # deeppink
-    ax1[2].set_ylabel('Wind speed (m/s)')
-    ax1[2].set_xlabel('Time (s)')
-    ax1[2].legend(loc='best')
-    ax1[2].grid(True, alpha=0.3)
-    _plain_y(ax1[2])
-    ax1[2].set_ylim(0.0, 25.0)
-
-    # Second figure: UIC
-    fig2, ax2 = plt.subplots(4, 1, sharex=True, figsize=(9, 8))
-    fig2.suptitle('UIC', fontsize=14)
-
-    # Voltages (magnitude)
-    # Note: All voltages are in system base per-unit (voltage base, NOT power base)
     vi_x = result[(uic_name, 'vi_x')]
     vi_y = result[(uic_name, 'vi_y')]
     vi_mag = np.sqrt(vi_x**2 + vi_y**2)
-    ax2[0].plot(t_stored, vi_mag, label='|v_i| (internal voltage)', color='#FF1493', linewidth=1.5)  # deeppink
-    ax2[0].plot(t_stored, np.array(v_bus), label='|v_bus| (terminal voltage)', color='blue', linewidth=1.5)
-    ax2[0].set_ylabel('Voltage (p.u., sys V_n)')
-    ax2[0].legend(loc='best')
-    ax2[0].grid(True, alpha=0.3)
-    _plain_y(ax2[0])
-    ax2[0].set_ylim(0.95, 1.05)
-
-    # Internal voltage components
-    ax2[1].plot(t_stored, vi_x, label='v_i_x (real)', color='#FF1493', linewidth=1.5)  # deeppink
-    ax2[1].plot(t_stored, vi_y, label='v_i_y (imaginary)', color='blue', linewidth=1.5)
-    ax2[1].set_ylabel('Internal voltage (p.u., sys V_n)')
-    ax2[1].legend(loc='best')
-    ax2[1].grid(True, alpha=0.3)
-    ax2[1].axhline(y=0, color='gray', linestyle='--', alpha=0.5)
-    _plain_y(ax2[1])
-    # Components typically live near 0..1 in this case; avoid over-zooming
-    ax2[1].set_ylim(-0.1, 1.1)
-
-    # Current magnitude
-    ax2[2].plot(t_stored, i_a_mag_hist, label='|i_a| (armature current)', color='#FF1493', linewidth=1.5)  # deeppink
-    ax2[2].set_ylabel('Current (p.u., UIC S_n)')
-    ax2[2].legend(loc='best')
-    ax2[2].grid(True, alpha=0.3)
-    _plain_y(ax2[2])
-    ax2[2].set_ylim(0.0, 1.5)
-
-    # Current angle
-    ax2[3].plot(t_stored, i_a_angle_hist, label='∠i_a (armature current angle)', color='blue', linewidth=1.5)
-    ax2[3].set_ylabel('Current angle (deg)')
-    ax2[3].set_xlabel('Time (s)')
-    ax2[3].legend(loc='best')
-    ax2[3].grid(True, alpha=0.3)
-    _plain_y(ax2[3])
-    ax2[3].set_ylim(-90.0, 90.0)
-
-    # Third figure: Power
-    # 0: WT powers, 1: UIC P at bus, 2: UIC Q at bus, 3: Infinite bus P/Q
-    fig3, ax3 = plt.subplots(4, 1, sharex=True, figsize=(9, 12))
-    fig3.suptitle('Power', fontsize=14)
-
-    # Power comparison (WT view): P_aero, P_e at UIC, and P_ref from WT
-    ax3[0].plot(t_stored, P_aero_stored, label='P_aero (aerodynamic, WT)', color='orange', linewidth=1.5)
-    ax3[0].plot(t_stored, P_e_stored, label='P_e (electrical at UIC)', color='#FF1493', linewidth=1.5)  # deeppink
-    ax3[0].plot(t_stored, P_ref_stored, label='P_ref lagged, WT → UIC (command)', color='blue', linewidth=1.5, linestyle='--')
-    ax3[0].set_ylabel('Power (p.u., sys S_n)')
-    ax3[0].legend(loc='best')
-    ax3[0].grid(True, alpha=0.3)
-    _plain_y(ax3[0])
-    ax3[0].set_ylim(0.0, 2.0)
-
-    # UIC bus-side active power: actual vs reference (including xf losses)
-    ax3[1].plot(t_stored, P_uic_bus_actual, label='P_UIC actual at bus', color='#FF1493', linewidth=1.5)
-    ax3[1].plot(t_stored, P_uic_bus_ref, '--', label='P_UIC ref at bus (from internal ref)', color='blue', linewidth=1.5)
-    ax3[1].set_ylabel('P at bus (p.u., sys S_n)')
-    ax3[1].legend(loc='best')
-    ax3[1].grid(True, alpha=0.3)
-    _plain_y(ax3[1])
-    ax3[1].set_ylim(0.0, 2.0)
-
-    # UIC bus-side reactive power: actual vs external reference (constant Q_ref)
-    # External Q_ref is the case-data setpoint on UIC base, converted to system base
     sys_s_n_plot = wt_model.sys_par['s_n']
     uic_s_n_plot = uic_model.par['S_n'][0]
     q_ref_ext_sys = uic_model.par['q_ref'][0] * uic_s_n_plot / sys_s_n_plot
-    ax3[2].plot(t_stored, Q_uic_bus_actual, label='Q_UIC actual at bus', color='#FF1493', linewidth=1.5)
-    ax3[2].axhline(y=q_ref_ext_sys, linestyle='--', color='blue',
-                   label='Q_UIC ref at bus (external setpoint, const.)')
-    ax3[2].set_ylabel('Q at bus (p.u., sys S_n)')
-    ax3[2].legend(loc='best')
-    ax3[2].grid(True, alpha=0.3)
-    _plain_y(ax3[2])
-    ax3[2].set_ylim(-1.0, 1.0)
 
-    # Infinite bus power (P and Q in same subplot)
-    ax3[3].plot(t_stored, P_gen_stored, label='P_inf (infinite bus)', color='blue', linewidth=1.5)
-    ax3[3].plot(t_stored, Q_gen_stored, label='Q_inf (infinite bus)', color='#FF1493', linewidth=1.5)  # deeppink
-    ax3[3].set_ylabel('P, Q_inf (p.u., sys S_n)')
-    ax3[3].set_xlabel('Time (s)')
-    ax3[3].legend(loc='best')
-    ax3[3].grid(True, alpha=0.3)
-    _plain_y(ax3[3])
-    ax3[3].set_ylim(-1.0, 1.0)
+    if not _cli.no_thesis_plots:
+        thesis_dir = os.path.join(project_root, 'casestudies', 'dyn_sim', 'logs', 'wt', 'plots', 'thesis')
+        os.makedirs(thesis_dir, exist_ok=True)
+        _show = not _cli.no_show
+        t_np = t_stored.to_numpy(dtype=float) if hasattr(t_stored, 'to_numpy') else np.asarray(t_stored, dtype=float)
 
-    # Quick numeric “what happens around 70 s?” diagnostic
-    # (Helps separate real disturbances from formatting artifacts.)
-    try:
-        t_arr = t_stored.to_numpy(dtype=float)
-        p_bus = np.asarray(P_uic_bus_actual, dtype=float)
-        if t_arr.size == p_bus.size:
-            i70 = int(np.argmin(np.abs(t_arr - 70.0)))
-            w = max(1, int(2.0 / (t_arr[1] - t_arr[0]))) if t_arr.size > 1 else 1  # ~±2s window
-            lo = max(0, i70 - w)
-            hi = min(t_arr.size, i70 + w + 1)
-            seg = p_bus[lo:hi]
-            seg = seg[np.isfinite(seg)]
+        save_single_model_multi(
+            thesis_dir, 'baseline_speeds_pu', 'Drivetrain speeds', t_np,
+            [
+                (np.asarray(omega_m_hist), legend_label('omega_m_pu'), None),
+                (np.asarray(omega_e_hist), legend_label('omega_e_pu'), None),
+            ],
+            ylabel=r'Speed (p.u., $\omega_{m,\mathrm{rated}}$ base)', model='baseline', show=_show,
+        )
+        save_single_model_trace(
+            thesis_dir, 'baseline_pitch_deg', 'Blade pitch angle', t_np,
+            np.asarray(pitch_angle_hist), ylabel='Pitch angle (deg)', model='baseline',
+            var_name='pitch_deg', show=_show,
+        )
+        save_single_model_trace(
+            thesis_dir, 'baseline_wind_mps', 'Wind speed', t_np,
+            np.asarray(wind_speed_hist), ylabel='Wind speed (m/s)', model='baseline',
+            var_name='wind_speed_mps', show=_show,
+        )
+        save_single_model_multi(
+            thesis_dir, 'baseline_voltage_pu', 'UIC voltages', t_np,
+            [
+                (vi_mag, legend_label('vi_mag'), None),
+                (np.asarray(v_bus), legend_label('v_bus_pu'), None),
+            ],
+            ylabel='Voltage (p.u., system base)', model='baseline', show=_show,
+        )
+        save_single_model_multi(
+            thesis_dir, 'baseline_vi_components_pu', 'UIC internal voltage', t_np,
+            [
+                (np.asarray(vi_x), legend_label('vi_x'), None),
+                (np.asarray(vi_y), legend_label('vi_y'), None),
+            ],
+            ylabel='Internal voltage (p.u.)', model='baseline', show=_show,
+        )
+        save_single_model_trace(
+            thesis_dir, 'baseline_current_mag_pu', 'Armature current magnitude', t_np,
+            np.asarray(i_a_mag_hist), ylabel='Current (p.u., UIC base)', model='baseline',
+            var_name='i_a_mag', show=_show,
+        )
+        save_single_model_trace(
+            thesis_dir, 'baseline_current_angle_deg', 'Armature current angle', t_np,
+            np.asarray(i_a_angle_hist), ylabel='Current angle (deg)', model='baseline',
+            var_name='i_a_angle', show=_show,
+        )
+        save_single_model_multi(
+            thesis_dir, 'baseline_wt_power_pu', 'Wind-turbine power', t_np,
+            [
+                (np.asarray(P_aero_stored), legend_label('P_aero_sys_pu'), None),
+                (np.asarray(P_e_stored), legend_label('P_e_sys_pu'), None),
+                (np.asarray(P_ref_stored), legend_label('P_ref_sys_pu'), '--'),
+            ],
+            ylabel='Power (p.u., system base)', model='baseline', show=_show,
+        )
+        save_single_model_multi(
+            thesis_dir, 'baseline_P_uic_bus_pu', 'UIC active power at bus', t_np,
+            [
+                (np.asarray(P_uic_bus_actual), legend_label('P_uic_bus_actual_sys_pu'), None),
+                (np.asarray(P_uic_bus_ref), legend_label('P_uic_bus_ref_sys_pu'), '--'),
+            ],
+            ylabel='Active power (p.u., system base)', model='baseline', show=_show,
+        )
+        save_single_model_multi(
+            thesis_dir, 'baseline_Q_uic_bus_pu', 'UIC reactive power at bus', t_np,
+            [(np.asarray(Q_uic_bus_actual), legend_label('Q_uic_bus_actual_sys_pu'), None)],
+            ylabel='Reactive power (p.u., system base)', model='baseline', show=_show,
+        )
+        save_single_model_trace(
+            thesis_dir, 'baseline_Q_ref_uic_bus_pu', 'UIC reactive-power setpoint', t_np,
+            np.full_like(t_np, q_ref_ext_sys),
+            ylabel='Reactive power (p.u., system base)', model='baseline',
+            label=legend_label('Q_uic_bus_ref_sys_pu'), show=_show,
+        )
+        save_single_model_multi(
+            thesis_dir, 'baseline_inf_bus_PQ_pu', 'Infinite-bus power', t_np,
+            [
+                (np.asarray(P_gen_stored), legend_label('P_inf_sys_pu'), None),
+                (np.asarray(Q_gen_stored), legend_label('Q_inf_sys_pu'), None),
+            ],
+            ylabel='Power (p.u., system base)', model='baseline', show=_show,
+        )
+        print(f"Thesis figures saved to {thesis_dir}")
 
-    except Exception:
-        pass
-
-    plt.tight_layout()
     print(f"\nSimulation took {time.perf_counter() - t_start_wall:.2f} seconds.")
-    plt.show(block=True)
+    if not _cli.no_show and _cli.no_thesis_plots:
+        plt.show(block=True)
+    elif not _cli.no_show and not _cli.no_thesis_plots:
+        plt.show(block=False)
     # endregion

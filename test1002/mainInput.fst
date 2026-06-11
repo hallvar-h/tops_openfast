@@ -3,7 +3,7 @@ IEA 15 MW offshore reference model monopile configuration
 ---------------------- SIMULATION CONTROL --------------------------------------
 True                  Echo        - Echo input data to <RootName>.ech (flag)
 "FATAL"                AbortLevel  - Error level when simulation should abort (string) {"WARNING", "SEVERE", "FATAL"}
-361.0                  TMax        - Total run time (s)
+900.0                  TMax        - Total run time (s)
 0.01                   DT          - Recommended module time step (s)
 2                      InterpOrder - Interpolation order for input/output time history (-) {1=linear, 2=quadratic}
 0                      NumCrctn    - Number of correction iterations (-) {0=explicit calculation, i.e., no corrections}

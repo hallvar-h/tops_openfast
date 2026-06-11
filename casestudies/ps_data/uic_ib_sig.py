@@ -19,7 +19,7 @@ def load():
 
         'loads': [
             ['name',    'bus',  'P',    'Q',    'model'],
-            ['L1',      'B3',   15,    5,    'Z'],
+            ['L1',      'B3',   20,    5,    'Z'],
         ],
 
         'generators': {
@@ -32,7 +32,7 @@ def load():
         'vsc': {
             'UIC_sig': [
                 ['name', 'bus', 'S_n', 'V_n', 'v_ref', 'p_ref', 'q_ref',   'Ki',   'Kv',    'xf', 'perfect_tracking', 'T_filter'],
-                ['UIC1', 'B2',    20,   22,      1.0,     0.5,      0.0,     0.1/2,     0.0,    0.1,        1,          0.1   ]  # same as test_WT, no WT
+                ['UIC1', 'B2',    20,   22,      1.0,     0.5,      0.0,     0.03,     0.0,    0.1,        1,          0.1   ]  # same as test_WT, no WT
             ],
         },
     }

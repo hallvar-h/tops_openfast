@@ -1,6 +1,11 @@
 import os
 import numpy as np
 from src.dyn_models.utils import DAEModel
+from src.dyn_models.speed_lpf import (
+    apply_speed_lpf_dynamics,
+    resolve_speed_lpf_params,
+    speed_pu_for_use,
+)
 from fmpy import read_model_description, extract
 from fmpy.fmi2 import FMU2Slave
 
@@ -13,9 +18,10 @@ class FMUtoUICdrivetrain(DAEModel):
         'FMUtoUICdrivetrain': {
             'FMUtoUICdrivetrain': [
                 ['name', 'UIC', 'S_n', 'V_n', 'FMU_path', 'fmu_filename', 'control_mode', 'wd_path', 'openfast_test_dir',
-                 'J_m', 'J_e', 'K', 'D', 'omega_m_rated', 'fmu_dt', 'ElecPwrCom_kW', 'efficiency'],
+                 'J_m', 'J_e', 'K', 'D', 'omega_m_rated', 'fmu_dt', 'ElecPwrCom_kW', 'efficiency',
+                 'speed_lpf_type', 'speed_lpf_corner_rad_s', 'speed_lpf_damping'],
                 ['FMUtoUICdrivetrain1', 'UIC1', 15, 22, 'FMU_path1', 'fmu_filename1', 3, 'wd_path1', 'openfast_test_dir1',
-                 1.0e7, 1.0e6, 7.0e8, 7.0e7, 7.55, 0.01, 20000.0, 0.95756],
+                 1.0e7, 1.0e6, 7.0e8, 7.0e7, 7.55, 0.01, 20000.0, 0.95756, 2, 1.00810, 0.70000],
             ],
         }
 
@@ -25,7 +31,8 @@ class FMUtoUICdrivetrain(DAEModel):
         sn = par['S_n']
         sn[sn == 0] = self.sys_par['s_n']
         par['S_n'] = sn
-        self._efficiency = float(np.asarray(par['efficiency']).ravel()[0])
+        eta = float(np.asarray(par['efficiency']).ravel()[0])
+        self._efficiency = eta if np.isfinite(eta) and eta > 0.0 else 1.0
         self._fmu_dt = float(np.asarray(par['fmu_dt']).ravel()[0])
         omega_rated_rpm = float(np.asarray(par['omega_m_rated']).ravel()[0])
         J_m = float(np.asarray(par['J_m']).ravel()[0])
@@ -152,6 +159,27 @@ class FMUtoUICdrivetrain(DAEModel):
                 f"Invalid 'ElecPwrCom_kW'={self._elec_pwr_com_kW}. Must be a finite float >= 0 (kW)."
             )
 
+        n_units = int(np.asarray(par["S_n"]).size)
+        (
+            self._speed_lpf_type,
+            self._speed_lpf_corner_rad_s,
+            self._speed_lpf_damping,
+        ) = resolve_speed_lpf_params(par, n_units)
+
+    def _pe_local_pu(self, x, v) -> float:
+        par = self.par
+        pe_uic = float(np.asarray(self.P_e(x, v)).ravel()[0])
+        s_n_uic = float(np.asarray(self.S_n_UIC(x, v)).ravel()[0])
+        s_n_loc = float(np.asarray(par["S_n"]).ravel()[0])
+        return pe_uic * (s_n_uic / s_n_loc) if s_n_loc > 0 else pe_uic
+
+    def _te_pu(self, X, pe_pu: float) -> float:
+        lpf_type = int(np.asarray(self._speed_lpf_type).ravel()[0])
+        omega_for_te = speed_pu_for_use(X, "omega_e", "omega_e_filt", lpf_type)
+        if not np.isfinite(omega_for_te) or abs(omega_for_te) <= 1e-6:
+            return 0.0
+        return float(pe_pu) / (self._efficiency * omega_for_te)
+
     def connections(self):
         # tops convention of input and output to connected model; here uic is connected
         # P_e is elec power output from uic, S_n_UIC is UIC base power: UIC -> FMUtoUICdrivetrain
@@ -187,7 +215,13 @@ class FMUtoUICdrivetrain(DAEModel):
         ]
 
     def state_list(self):
-        return ['omega_e', 'theta_s']
+        # Grid coupling (same as WindTurbine): omega_e_filt for Te = Pe/(omega_e_filt*eta).
+        return [
+            "omega_e",
+            "theta_s",
+            "omega_e_filt",
+            "omega_e_filt_dot",
+        ]
 
     def input_list(self):
         return ['P_e', 'S_n_UIC'] 
@@ -203,14 +237,14 @@ class FMUtoUICdrivetrain(DAEModel):
         X = self.local_view(x_0)
         par = self.par
 
-        # Electrical torque requested by coupling at init (local pu)
-        Pe_uic_pu = float(np.asarray(self.P_e(x_0, v_0)).ravel()[0]) # get P_e output from UIC
-        S_n_UIC = float(np.asarray(self.S_n_UIC(x_0, v_0)).ravel()[0]) # get UIC S_n base 
-        Pe_pu = Pe_uic_pu * (S_n_UIC / par['S_n']) # convert P_e to local pu on S_n base
-        omega_e0 = 1.0  # hardcoded guess. aligns with init in openfast data, this also assumes rated speed
+        # Electrical torque requested by coupling at init (local pu); shaft angle set after FMU prime.
+        Pe_pu = self._pe_local_pu(x_0, v_0)
+        omega_e0 = 1.0  # guess until FMU GenSpeed is read after prime
         Te_pu = Pe_pu / (self._efficiency * omega_e0) if abs(omega_e0) > 1e-6 else 0.0
-        self._Te_pu_cmd = Te_pu # cache electrical torque command for next step
-        X['theta_s'] = Te_pu / par['K'] # initialize shaft twist
+        self._Te_pu_cmd = Te_pu
+        om_guess = np.asarray(omega_e0, dtype=float).ravel()
+        X["omega_e_filt"] = om_guess.copy()
+        X["omega_e_filt_dot"] = np.zeros_like(om_guess)
 
         # Prime the FMU once before the dynamic simulation loop.
         # OpenFAST FMU outputs are often zeros until the first doStep().
@@ -221,8 +255,9 @@ class FMUtoUICdrivetrain(DAEModel):
             if not np.isfinite(dt0) or dt0 <= 0.0:
                 raise ValueError(f"FMUtoUICdrivetrain: invalid fmu_dt={dt0}.")
 
-            # Inputs for priming are consistent with the initial network operating point.
-            P_e_kW0 = float(Pe_uic_pu) * float(S_n_UIC) * 1e3
+            # Electrical power (kW) on WT base: Pe_pu is local (WT) pu.
+            s_n_loc_mva = float(np.asarray(par['S_n']).ravel()[0])
+            P_e_kW0 = float(np.asarray(Pe_pu).ravel()[0]) * s_n_loc_mva * 1e3
             self._genpwr_kW_set = float(P_e_kW0)
             #self.fmu.setReal([self.vrs['GenPwr']], [float(P_e_kW0)]) # unsure if these should be set here as the fmu should get readback vals the first iterations
 
@@ -243,8 +278,14 @@ class FMUtoUICdrivetrain(DAEModel):
             self._gen_speed_rpm_meas = float(self.fmu.getReal([self.vrs['GenSpeed']])[0])
             self._gen_tq_kNm_meas = float(self.fmu.getReal([self.vrs['GenTq']])[0])
 
-        # Keep TOPS speed state initialization independent of FMU readback.
-        X['omega_e'] = self._gen_speed_rpm_meas / self._omega_base_rpm
+        X["omega_e"] = self._gen_speed_rpm_meas / self._omega_base_rpm
+        om_e = np.asarray(X["omega_e"], dtype=float).ravel()
+        X["omega_e_filt"] = om_e.copy()
+        X["omega_e_filt_dot"] = np.zeros_like(om_e)
+        Pe_pu = self._pe_local_pu(x_0, v_0)
+        self._Te_pu_cmd = self._te_pu(X, Pe_pu)
+        K_pu = float(np.asarray(par['K']).ravel()[0])
+        X['theta_s'] = self._Te_pu_cmd / K_pu if K_pu > 0.0 else 0.0
 
         return
 
@@ -257,16 +298,12 @@ class FMUtoUICdrivetrain(DAEModel):
         omega_m = omega_e if self._omega_m_pu_meas is None else float(self._omega_m_pu_meas) # from OpenFAST (cached)
         theta_s = float(np.asarray(X['theta_s']).ravel()[0]) # current tops state of shaft twist angle
 
-        # Electrical torque from power system:
-        # P_e is in UIC p.u. on base S_n_UIC, convert to local p.u. on base S_n.
-        Pe_uic_pu = float(np.asarray(self.P_e(x, v)).ravel()[0]) # electrical power from UIC (pu on UIC base)
-        S_n_UIC = float(np.asarray(self.S_n_UIC(x, v)).ravel()[0]) # UIC base power
-        Pe_pu = Pe_uic_pu * (S_n_UIC / par['S_n']) # UIC p P output on local base
         if not np.isfinite(omega_e):
             raise ValueError(f"FMUtoUICdrivetrain: omega_e is not finite (omega_e={omega_e}).")
-        eff = float(self._efficiency)
-        Te_pu = Pe_pu / (eff * omega_e) if abs(omega_e) > 1e-6 else 0.0 # output Pe is scaled with powertrain efficiency
-        self._Te_pu_cmd = float(np.asarray(Te_pu).ravel()[0]) # cache electrical torque command for next step
+
+        Pe_pu = self._pe_local_pu(x, v)
+        Te_pu = self._te_pu(X, Pe_pu)
+        self._Te_pu_cmd = float(Te_pu)
 
         # shaft torque
         omega_s = omega_m - omega_e
@@ -279,24 +316,30 @@ class FMUtoUICdrivetrain(DAEModel):
             raise ValueError(f"FMUtoUICdrivetrain: T_shaft is not finite (T_shaft={T_shaft}).")
         if not np.isfinite(Te_pu):
             raise ValueError(f"FMUtoUICdrivetrain: Te_pu is not finite (Te_pu={Te_pu}).")
-        
+
         d_omega_e = (1 / (2.0 * self.H_e)) * (T_shaft - Te_pu)
-        if not np.isfinite(d_omega_e): # avoid simulations with NaN values
+        if not np.isfinite(d_omega_e):
             raise ValueError(
                 "FMUtoUICdrivetrain: d(omega_e) is not finite "
                 f"(d_omega_e={d_omega_e}, H_e={self.H_e}, T_shaft={T_shaft}, Te_pu={Te_pu})."
             )
-        # tops update of state differentials
-        dX['omega_e'] = d_omega_e
-        dX['theta_s'] = omega_s
-        
+        dX["omega_e"] = d_omega_e
+        dX["theta_s"] = omega_s
+
+        lpf_type = int(np.asarray(self._speed_lpf_type).ravel()[0])
+        omega_c = float(np.asarray(self._speed_lpf_corner_rad_s).ravel()[0])
+        zeta = float(np.asarray(self._speed_lpf_damping).ravel()[0])
+        apply_speed_lpf_dynamics(
+            dX, X, np.asarray(X["omega_e"]).ravel(), "omega_e_filt", "omega_e_filt_dot", lpf_type, omega_c, zeta
+        )
+
         return
 
     # FMU output names from modelDescription.xml (causality="output")
     FMU_OUTPUT_NAMES = [
         'Time', 'HSShftTq', 'GenTq', 'Wind1VelX', 'RtVAvgxh', 'BldPitch1',
         'NacYaw', 'RefGenSpd', 'GenSpeed', 'RotSpeed', 'LSSGagPxa', 'Azimuth',
-        'GenAccel', 'YawBrTAxp', 'YawBrTAyp',
+        'GenAccel', 'YawBrTAxp', 'YawBrTAyp', 'RtAeroMxh',
     ]
 
     def get_all_fmu_outputs(self):
@@ -309,14 +352,16 @@ class FMUtoUICdrivetrain(DAEModel):
         return dict(zip(names, vals))
 
     def P_ref(self, x, v):
+        # P_ref (UIC pu, electrical) = eta * P_mech; GenTq is mechanical (kN·m), same as WindTurbine MPT.
         # Use cached OpenFAST outputs to avoid repeated FMU reads during one solver step.
-        # (The DAE solver may call output functions multiple times per time step.)
-
         X = self.local_view(x)
-        omega_e = float(np.asarray(X['omega_e']).ravel()[0])
-        P_kW = float(self._gen_tq_kNm_meas) * omega_e * self._omega_base_rad_s   # (kN·m)*(rad/s) = kW
+        lpf_type = int(np.asarray(self._speed_lpf_type).ravel()[0])
+        omega_for_pref = speed_pu_for_use(X, 'omega_e', 'omega_e_filt', lpf_type)
+        if self._gen_tq_kNm_meas is None:
+            return np.atleast_1d(0.0)
+        P_mech_kW = float(self._gen_tq_kNm_meas) * omega_for_pref * self._omega_base_rad_s
         S_n_MVA = float(np.asarray(self.S_n_UIC(x, v)).ravel()[0])
-        p_ref_pu = (P_kW / (S_n_MVA * 1e3)) * float(self._efficiency)
+        p_ref_pu = (P_mech_kW / (S_n_MVA * 1e3)) * self._efficiency
         return np.atleast_1d(p_ref_pu)
     
     def step_fmu(self, x, v, t, dt):
@@ -331,16 +376,12 @@ class FMUtoUICdrivetrain(DAEModel):
         P_e_kW = P_e_uic_pu * S_n_uic_MVA * 1e3
         input_power_kW = float(P_e_kW)
 
-        # Torque command from accepted (x, v): Te = Pe/(eff*omega_e) in local pu.
-        Pe_pu = P_e_uic_pu * (S_n_uic_MVA / par['S_n'])
-        omega_e = float(np.asarray(X['omega_e']).ravel()[0])
-        if not np.isfinite(omega_e):
-            raise ValueError(f"FMUtoUICdrivetrain: omega_e is not finite (omega_e={omega_e}).")
-        Te_pu = Pe_pu[0] / (self._efficiency * omega_e) if abs(omega_e) > 1e-6 else 0.0
+        Pe_pu = self._pe_local_pu(x, v)
+        Te_pu = self._te_pu(X, Pe_pu)
         self._Te_pu_cmd = Te_pu
 
-        # Send generator torque command (kN·m) into OpenFAST-FMU
-        Te_kNm_cmd = (float(Te_pu)) * self._T_base_Nm / (1e3)
+        # Send coupling torque (kN·m) into OpenFAST-FMU
+        Te_kNm_cmd = float(Te_pu) * self._T_base_Nm / 1e3
         input_torque = float(Te_kNm_cmd[0])
 
         # Startup: echo measured FMU torque back as input for a few steps
@@ -351,6 +392,7 @@ class FMUtoUICdrivetrain(DAEModel):
             tq_ideal = float(self.fmu.getReal([self.vrs['GenTq']])[0])
             if np.isfinite(tq_ideal):
                 input_torque = tq_ideal
+            input_power_kW = tq_ideal * self._omega_base_rad_s / 1e3
             # Keep GenPwr driven from TOPS (grid measurement) unless we explicitly want to echo power as well.
             # (Computing an "ideal power" from torque requires a reliable GenSpeed sample; cached value may be None/stale.)
         self.fmu.setReal([self.vrs['GenSpdOrTrq']], [input_torque])

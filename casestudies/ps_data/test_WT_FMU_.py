@@ -43,7 +43,7 @@ def load():
         'vsc': {
             'UIC_sig': [
                 ['name', 'bus', 'S_n', 'V_n', 'v_ref', 'p_ref', 'q_ref',   'Ki',   'Kv',    'xf', 'perfect_tracking', 'T_filter'],
-                ['UIC1', 'B2',    20,   22,      1.0,     0.5,      0.0,     0.1/3,     0.0,    0.1,        1,          0.1   ]
+                ['UIC1', 'B2',    20,   22,      1.0,     0.5,      0.0,     0.03,     0.0,    0.1,        1,          0.1   ]
             ],
         },
 
