@@ -21,8 +21,9 @@ dependencies = [
 	"numpy",
 	"scipy",
 	"matplotlib",
-    "pandas"
-	]
+	"pandas",
+	"fmpy",
+]
 
 [project.urls]
 "Homepage" = "https://github.com/hallvar-h/TOPS"
