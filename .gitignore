@@ -182,7 +182,7 @@ fort.20
 *.slxc
 *.autosave
 
-# Optional: uncomment to ignore simulation results
-# test_WT_FMU_sim_results.csv
+# Legacy dyn_sim CSV (use logs/fmu_uic/fmu_uic_sim.csv instead)
+casestudies/dyn_sim/test_WT_FMU_sim_results.csv
 
 slprj/

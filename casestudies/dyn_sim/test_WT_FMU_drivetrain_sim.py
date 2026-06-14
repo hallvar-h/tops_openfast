@@ -18,7 +18,12 @@ import src.solvers as dps_sol
 import importlib
 importlib.reload(dps)
 
-from casestudies.dyn_sim.thesis_plot_style import save_single_model_multi, save_single_model_trace, legend_label
+from casestudies.dyn_sim.plotting.log_paths import (
+    FMU_DRIVETRAIN_CSV,
+    ensure_log_dir,
+    fmu_drivetrain_thesis_plots_dir,
+)
+from casestudies.dyn_sim.plotting.thesis_plot_style import save_coupled_thesis_plots
 
 def _safe_legend(ax, *args, **kwargs):
     handles, labels = ax.get_legend_handles_labels()
@@ -27,7 +32,7 @@ def _safe_legend(ax, *args, **kwargs):
 
 if __name__ == '__main__':
     _ap = argparse.ArgumentParser(add_help=False)
-    _ap.add_argument('--no-show', action='store_true')
+    _ap.add_argument('--show', action='store_true', help='Open plot windows (default: save PNGs only).')
     _ap.add_argument('--no-thesis-plots', action='store_true')
     _cli, _ = _ap.parse_known_args()
 
@@ -41,7 +46,8 @@ if __name__ == '__main__':
 
     # UIC p_ref for power flow (FMU provides it during dynamics via connection)
     uic_model = ps.vsc['UIC_sig']
-    uic_model.par['p_ref'][:] = 0.6471503597375907/2 
+    gen_model = ps.gen['GEN']
+    uic_model.par['p_ref'][:] = 0.75 #0.6471503597375907/2 
     uic_model.par['q_ref'][:] = 0.
 
     t0 = time.perf_counter()
@@ -61,7 +67,7 @@ if __name__ == '__main__':
     result_dict = defaultdict(list)
     # Allow quick A/B interface tests without changing the file.
     # Example: set FMU_T_END=20 to run 20 seconds.xx
-    t_end = float(os.getenv('FMU_T_END', '90.'))
+    t_end = float(os.getenv('FMU_T_END', '240.'))
     dt = 0.01
     # Use dt=0.01 to match OpenFAST FMU (canHandleVariableCommunicationStepSize=false)
     f_ode = lambda t_, x_: ps.state_derivatives(t_, x_, ps.solve_algebraic(t_, x_))
@@ -81,6 +87,11 @@ if __name__ == '__main__':
     P_uic_bus_ref_stored = []
     Q_uic_bus_ref_stored = []
     v_bus = []
+    vi_mag_hist = []
+    i_a_mag_hist = []
+    i_a_angle_hist = []
+    P_inf_stored = []
+    Q_inf_stored = []
     fmu_outputs_stored = []
     # Also store commanded electrical torque sent to FMU (from FMUtoUICdrivetrain)
     Te_cmd_pu_stored = []
@@ -102,6 +113,7 @@ if __name__ == '__main__':
     [result_dict[tuple(desc)].append(state) for desc, state in zip(ps.state_desc, x0)]
     sys_s_n = ps.sys_data['s_n']
     uic_s_n = uic_model.par['S_n'][0]
+    gen_s_n = gen_model.par['S_n'][0]
     # Short circuit parameters (modify reduced Ybus diagonal at the chosen bus)
     sc_bus_idx = ps.vsc['UIC_sig'].bus_idx_red['terminal'][0]
     run_sc = False
@@ -175,6 +187,8 @@ if __name__ == '__main__':
         ElecPwrCom_set_kW_stored.append(np.nan)
 
 
+    X0 = uic_model.local_view(x0)
+    vi0 = X0['vi_x'][0] + 1j * X0['vi_y'][0]
     i_a0 = uic_model.i_a(x0, v0)[0]
     s_bus_actual0 = uic_model.s_e(x0, v0)[0]
     s_ref_internal0 = uic_model.p_ref(x0, v0)[0] + 1j * uic_model.q_ref(x0, v0)[0]
@@ -187,6 +201,13 @@ if __name__ == '__main__':
 
     v_t_uic = uic_model.v_t(x0, v0)[0]
     v_bus.append(np.abs(v_t_uic))
+    vi_mag_hist.append(float(np.abs(vi0)))
+    i_a_mag_hist.append(float(np.abs(i_a0)))
+    i_a_angle_hist.append(float(np.angle(i_a0) * 180 / np.pi))
+    P_gen0 = gen_model.p_e(x0, v0)[0]
+    Q_gen0 = gen_model.q_e(x0, v0)[0]
+    P_inf_stored.append(P_gen0 * gen_s_n / sys_s_n)
+    Q_inf_stored.append(Q_gen0 * gen_s_n / sys_s_n)
 
     # Simulation loop
     while t < t_end:
@@ -266,6 +287,8 @@ if __name__ == '__main__':
         else:
             ElecPwrCom_set_kW_stored.append(np.nan)
 
+        X = uic_model.local_view(x)
+        vi = X['vi_x'][0] + 1j * X['vi_y'][0]
         i_a = uic_model.i_a(x, v)[0]
         s_bus_actual = uic_model.s_e(x, v)[0]
         s_ref_internal = uic_model.p_ref(x, v)[0] + 1j * uic_model.q_ref(x, v)[0]
@@ -278,6 +301,13 @@ if __name__ == '__main__':
 
         v_t_uic = uic_model.v_t(x, v)[0]
         v_bus.append(np.abs(v_t_uic))
+        vi_mag_hist.append(float(np.abs(vi)))
+        i_a_mag_hist.append(float(np.abs(i_a)))
+        i_a_angle_hist.append(float(np.angle(i_a) * 180 / np.pi))
+        P_gen = gen_model.p_e(x, v)[0]
+        Q_gen = gen_model.q_e(x, v)[0]
+        P_inf_stored.append(P_gen * gen_s_n / sys_s_n)
+        Q_inf_stored.append(Q_gen * gen_s_n / sys_s_n)
 
     # Terminate FMU
     for mdl in fmu_models:
@@ -302,6 +332,11 @@ if __name__ == '__main__':
             'P_e_uic_pu_raw': P_e_uic_pu_stored,
             'P_ref_uic_pu_raw': P_ref_uic_pu_stored,
             'v_bus_pu': v_bus,
+            'vi_mag_pu': np.asarray(vi_mag_hist, dtype=float),
+            'i_a_mag_pu_uic': np.asarray(i_a_mag_hist, dtype=float),
+            'i_a_angle_deg': np.asarray(i_a_angle_hist, dtype=float),
+            'P_inf_sys_pu': np.asarray(P_inf_stored, dtype=float),
+            'Q_inf_sys_pu': np.asarray(Q_inf_stored, dtype=float),
             'P_uic_bus_actual_sys_pu': P_uic_bus_actual_stored,
             'Q_uic_bus_actual_sys_pu': Q_uic_bus_actual_stored,
             'P_uic_bus_ref_sys_pu': P_uic_bus_ref_stored,
@@ -313,6 +348,10 @@ if __name__ == '__main__':
     if fmu_outputs_stored:
         df_fmu = pd.DataFrame(fmu_outputs_stored)
         out_df = pd.concat([out_df, df_fmu], axis=1)
+
+    oe_key = ("FMUtoUICdrivetrain1", "omega_e")
+    if oe_key in result.columns:
+        out_df["omega_e_tops_pu"] = result[oe_key].to_numpy(dtype=float)
 
     # Add torque command traces (same length as t_stored)
     out_df['Te_cmd_pu'] = np.asarray(Te_cmd_pu_stored, dtype=float)
@@ -340,12 +379,9 @@ if __name__ == '__main__':
         out_df['P_cmd_kW'] = out_df['Te_cmd_kNm'].to_numpy(dtype=float) * omega_gen
         out_df['P_cmd_pu'] = out_df['P_cmd_kW'].to_numpy(dtype=float) / (uic_s_n * 1e3)
     # Logging directory (single artifact per run; always overwrite).
-    log_dir = os.path.join(project_root, 'casestudies', 'dyn_sim', 'logs', 'fmu_drivetrain')
-    os.makedirs(log_dir, exist_ok=True)
-
-    out_path = os.path.join(log_dir, 'fmu_drivetrain.csv')
-    out_df.to_csv(out_path, index=False)
-    print(f"\nResults saved to {out_path} ({len(out_df.columns)} columns)")
+    ensure_log_dir(FMU_DRIVETRAIN_CSV)
+    out_df.to_csv(FMU_DRIVETRAIN_CSV, index=False)
+    print(f"\nResults saved to {FMU_DRIVETRAIN_CSV} ({len(out_df.columns)} columns)")
 
     df = pd.DataFrame(fmu_outputs_stored) if fmu_outputs_stored else None
     omega_base_rpm = None
@@ -353,101 +389,20 @@ if __name__ == '__main__':
         omega_base_rpm = float(np.asarray(fmu_mdl.par['omega_m_rated']).ravel()[0])
 
     if not _cli.no_thesis_plots:
-        thesis_dir = os.path.join(
-            project_root, 'casestudies', 'dyn_sim', 'logs', 'fmu_drivetrain', 'plots', 'thesis'
+        thesis_dir = fmu_drivetrain_thesis_plots_dir()
+        paths = save_coupled_thesis_plots(
+            str(thesis_dir),
+            out_df['t'].to_numpy(dtype=float),
+            out_df,
+            result_df=result,
+            df_fmu=df,
+            omega_base_rpm=omega_base_rpm,
+            show=_cli.show,
         )
-        os.makedirs(thesis_dir, exist_ok=True)
-        _show = not _cli.no_show
-        t_np = np.asarray(t_stored, dtype=float)
-
-        if 'v_bus_pu' in out_df.columns:
-            save_single_model_trace(
-                thesis_dir, 'coupled_Vt_pu', 'UIC terminal voltage', t_np,
-                out_df['v_bus_pu'].to_numpy(dtype=float), ylabel='Voltage magnitude (p.u.)',
-                model='coupled', var_name='v_bus_pu', show=_show,
-            )
-
-        speed_traces = []
-        oe_key = ('FMUtoUICdrivetrain1', 'omega_e')
-        if oe_key in result.columns:
-            speed_traces.append((
-                result[oe_key].to_numpy(dtype=float),
-                legend_label('omega_e'),
-                None,
-            ))
-        if omega_base_rpm and omega_base_rpm > 0 and df is not None:
-            if 'GenSpeed' in df.columns:
-                speed_traces.append((
-                    df['GenSpeed'].to_numpy(dtype=float) / omega_base_rpm,
-                    legend_label('GenSpeed'),
-                    None,
-                ))
-            if 'RotSpeed' in df.columns:
-                speed_traces.append((
-                    df['RotSpeed'].to_numpy(dtype=float) / omega_base_rpm,
-                    legend_label('RotSpeed'),
-                    None,
-                ))
-        if speed_traces:
-            save_single_model_multi(
-                thesis_dir, 'coupled_speeds_pu', 'Drivetrain speeds', t_np,
-                speed_traces, ylabel=r'Speed (p.u., $\omega_{m,\mathrm{rated}}$ base)',
-                model='coupled', show=_show,
-            )
-
-        th_key = ('FMUtoUICdrivetrain1', 'theta_s')
-        if th_key in result.columns:
-            save_single_model_trace(
-                thesis_dir, 'coupled_theta_s_pu', 'Shaft twist', t_np,
-                result[th_key].to_numpy(dtype=float), ylabel=r'Shaft twist $\theta_s$ (p.u.)',
-                model='coupled', var_name='theta_s', show=_show,
-            )
-
-        if df is not None:
-            wind_tr = []
-            if 'Wind1VelX' in df.columns:
-                wind_tr.append((
-                    df['Wind1VelX'].to_numpy(dtype=float),
-                    legend_label('Wind1VelX'),
-                    None,
-                ))
-            if 'RtVAvgxh' in df.columns:
-                wind_tr.append((
-                    df['RtVAvgxh'].to_numpy(dtype=float),
-                    legend_label('RtVAvgxh'),
-                    None,
-                ))
-            if wind_tr:
-                save_single_model_multi(
-                    thesis_dir, 'coupled_wind_mps', 'Wind speed', t_np,
-                    wind_tr, ylabel='Wind speed (m/s)', model='coupled', show=_show,
-                )
-            if 'BldPitch1' in df.columns:
-                save_single_model_trace(
-                    thesis_dir, 'coupled_pitch_deg', 'Blade pitch angle', t_np,
-                    df['BldPitch1'].to_numpy(dtype=float), ylabel='Pitch angle (deg)',
-                    model='coupled', var_name='BldPitch1', show=_show,
-                )
-
-        save_single_model_multi(
-            thesis_dir, 'coupled_P_e_ref_pu', 'Electrical power', t_np,
-            [
-                (out_df['P_e_sys_pu'].to_numpy(dtype=float), legend_label('P_e_sys_pu'), None),
-                (out_df['P_ref_sys_pu'].to_numpy(dtype=float), legend_label('P_ref_sys_pu'), '--'),
-            ],
-            ylabel='Power (p.u., system base)', model='coupled', show=_show,
-        )
-        save_single_model_multi(
-            thesis_dir, 'coupled_Q_uic_bus_pu', 'Reactive power at UIC bus', t_np,
-            [
-                (out_df['Q_uic_bus_actual_sys_pu'].to_numpy(dtype=float), legend_label('Q_uic_bus_actual_sys_pu'), None),
-                (out_df['Q_uic_bus_ref_sys_pu'].to_numpy(dtype=float), legend_label('Q_uic_bus_ref_sys_pu'), '--'),
-            ],
-            ylabel='Reactive power (p.u., system base)', model='coupled', show=_show,
-        )
-
-        print(f"Thesis figures saved to {thesis_dir}")
+        print(f"Thesis figures saved to {thesis_dir} ({len(paths)} files)")
 
     print(f"\nSimulation took {time.perf_counter() - t_start_wall:.2f} seconds.")
-    if not _cli.no_show and not _cli.no_thesis_plots:
-        plt.show(block=False)
+    if _cli.show and not _cli.no_thesis_plots:
+        import matplotlib.pyplot as plt
+
+        plt.show(block=True)

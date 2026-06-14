@@ -12,7 +12,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import time
-from casestudies.dyn_sim.thesis_plot_style import save_single_model_multi, save_single_model_trace, legend_label
+from casestudies.dyn_sim.plotting.log_paths import WT_CSV, ensure_log_dir, wt_thesis_plots_dir
+from casestudies.dyn_sim.plotting.thesis_plot_style import save_baseline_thesis_plots
 import src.dynamic as dps
 import src.solvers as dps_sol
 import importlib
@@ -20,7 +21,7 @@ importlib.reload(dps)
 
 if __name__ == '__main__':
     _ap = argparse.ArgumentParser(add_help=False)
-    _ap.add_argument('--no-show', action='store_true')
+    _ap.add_argument('--show', action='store_true', help='Open plot windows (default: save PNGs only).')
     _ap.add_argument('--no-thesis-plots', action='store_true')
     _cli, _ = _ap.parse_known_args()
 
@@ -54,7 +55,7 @@ if __name__ == '__main__':
 
     t = 0
     result_dict = defaultdict(list)
-    t_end = 90. # Simulation time
+    t_end = 240. # Simulation time
 
     # Solver
     # Test explicit RK4 on the differential states. Since this is a DAE, solve algebraics explicitly inside f_ode.
@@ -77,6 +78,7 @@ if __name__ == '__main__':
     P_ref_stored = []
     P_ref_instant_stored = []  # instantaneous MPT ref (before lag), for comparison
     v_bus = []
+    vi_mag_hist = []
     omega_m_hist = []
     omega_e_hist = []
     T_mpt_wt_pu_hist = []
@@ -131,6 +133,7 @@ if __name__ == '__main__':
     # UIC bus-side actual and reference at t0
     X = uic_model.local_view(x0)
     vi = X['vi_x'][0] + 1j*X['vi_y'][0]
+    vi_mag_hist.append(float(np.abs(vi)))
     i_a = uic_model.i_a(x0, v0)[0]
     s_bus_actual = uic_model.s_e(x0, v0)[0]  # bus-side S
     # Internal reference S at vi
@@ -184,8 +187,9 @@ if __name__ == '__main__':
         [result_dict[tuple(desc)].append(state) for desc, state in zip(ps.state_desc, x)]
         # Store additional variables
 
-        v_t_uic = uic_model.v_t(x, v)[0] 
-        v_bus.append(np.abs(v_t_uic))  
+        v_t_uic = uic_model.v_t(x, v)[0]
+        v_bus.append(np.abs(v_t_uic))
+        vi_mag_hist.append(float(np.abs(vi)))
         P_aero_local = wt_model.P_aero(x, v)[0] 
         P_e_uic = wt_model.P_e(x, v)[0]  
         P_ref_uic = wt_model.P_ref(x, v)[0]  
@@ -255,8 +259,9 @@ if __name__ == '__main__':
             'P_e_sys_pu': np.asarray(P_e_stored, dtype=float),
             'P_ref_sys_pu': np.asarray(P_ref_stored, dtype=float),
             'P_ref_instant_sys_pu': np.asarray(P_ref_instant_stored, dtype=float),
-            # UIC terminal voltage magnitude (sys V base pu)
+            # UIC voltages (terminal |V_t| and internal |v_i|, system V base pu)
             'v_bus_pu': np.asarray(v_bus, dtype=float),
+            'vi_mag_pu': np.asarray(vi_mag_hist, dtype=float),
             # UIC bus-side power (sys base pu)
             'P_uic_bus_actual_sys_pu': np.asarray(P_uic_bus_actual, dtype=float),
             'Q_uic_bus_actual_sys_pu': np.asarray(Q_uic_bus_actual, dtype=float),
@@ -271,115 +276,18 @@ if __name__ == '__main__':
         }
     )
 
-    log_dir = os.path.join(project_root, 'casestudies', 'dyn_sim', 'logs', 'wt')
-    os.makedirs(log_dir, exist_ok=True)
-    out_path = os.path.join(log_dir, 'wt_model.csv')
-    out_df.to_csv(out_path, index=False)
-    print(f"\nResults saved to {out_path} ({len(out_df.columns)} columns)")
-
-    # region Plotting (thesis: one signal group per PNG)
-    t_stored = result[('Global', 't')]
-    n_pts = len(t_stored)
-    assert n_pts == len(Q_uic_bus_actual) == len(P_uic_bus_actual) == len(P_ref_instant_stored), "plot series length mismatch"
-
-    vi_x = result[(uic_name, 'vi_x')]
-    vi_y = result[(uic_name, 'vi_y')]
-    vi_mag = np.sqrt(vi_x**2 + vi_y**2)
-    sys_s_n_plot = wt_model.sys_par['s_n']
-    uic_s_n_plot = uic_model.par['S_n'][0]
-    q_ref_ext_sys = uic_model.par['q_ref'][0] * uic_s_n_plot / sys_s_n_plot
+    ensure_log_dir(WT_CSV)
+    out_df.to_csv(WT_CSV, index=False)
+    print(f"\nResults saved to {WT_CSV} ({len(out_df.columns)} columns)")
 
     if not _cli.no_thesis_plots:
-        thesis_dir = os.path.join(project_root, 'casestudies', 'dyn_sim', 'logs', 'wt', 'plots', 'thesis')
-        os.makedirs(thesis_dir, exist_ok=True)
-        _show = not _cli.no_show
-        t_np = t_stored.to_numpy(dtype=float) if hasattr(t_stored, 'to_numpy') else np.asarray(t_stored, dtype=float)
-
-        save_single_model_multi(
-            thesis_dir, 'baseline_speeds_pu', 'Drivetrain speeds', t_np,
-            [
-                (np.asarray(omega_m_hist), legend_label('omega_m_pu'), None),
-                (np.asarray(omega_e_hist), legend_label('omega_e_pu'), None),
-            ],
-            ylabel=r'Speed (p.u., $\omega_{m,\mathrm{rated}}$ base)', model='baseline', show=_show,
+        thesis_dir = wt_thesis_plots_dir()
+        paths = save_baseline_thesis_plots(
+            str(thesis_dir), out_df['t'].to_numpy(dtype=float), out_df, show=_cli.show,
         )
-        save_single_model_trace(
-            thesis_dir, 'baseline_pitch_deg', 'Blade pitch angle', t_np,
-            np.asarray(pitch_angle_hist), ylabel='Pitch angle (deg)', model='baseline',
-            var_name='pitch_deg', show=_show,
-        )
-        save_single_model_trace(
-            thesis_dir, 'baseline_wind_mps', 'Wind speed', t_np,
-            np.asarray(wind_speed_hist), ylabel='Wind speed (m/s)', model='baseline',
-            var_name='wind_speed_mps', show=_show,
-        )
-        save_single_model_multi(
-            thesis_dir, 'baseline_voltage_pu', 'UIC voltages', t_np,
-            [
-                (vi_mag, legend_label('vi_mag'), None),
-                (np.asarray(v_bus), legend_label('v_bus_pu'), None),
-            ],
-            ylabel='Voltage (p.u., system base)', model='baseline', show=_show,
-        )
-        save_single_model_multi(
-            thesis_dir, 'baseline_vi_components_pu', 'UIC internal voltage', t_np,
-            [
-                (np.asarray(vi_x), legend_label('vi_x'), None),
-                (np.asarray(vi_y), legend_label('vi_y'), None),
-            ],
-            ylabel='Internal voltage (p.u.)', model='baseline', show=_show,
-        )
-        save_single_model_trace(
-            thesis_dir, 'baseline_current_mag_pu', 'Armature current magnitude', t_np,
-            np.asarray(i_a_mag_hist), ylabel='Current (p.u., UIC base)', model='baseline',
-            var_name='i_a_mag', show=_show,
-        )
-        save_single_model_trace(
-            thesis_dir, 'baseline_current_angle_deg', 'Armature current angle', t_np,
-            np.asarray(i_a_angle_hist), ylabel='Current angle (deg)', model='baseline',
-            var_name='i_a_angle', show=_show,
-        )
-        save_single_model_multi(
-            thesis_dir, 'baseline_wt_power_pu', 'Wind-turbine power', t_np,
-            [
-                (np.asarray(P_aero_stored), legend_label('P_aero_sys_pu'), None),
-                (np.asarray(P_e_stored), legend_label('P_e_sys_pu'), None),
-                (np.asarray(P_ref_stored), legend_label('P_ref_sys_pu'), '--'),
-            ],
-            ylabel='Power (p.u., system base)', model='baseline', show=_show,
-        )
-        save_single_model_multi(
-            thesis_dir, 'baseline_P_uic_bus_pu', 'UIC active power at bus', t_np,
-            [
-                (np.asarray(P_uic_bus_actual), legend_label('P_uic_bus_actual_sys_pu'), None),
-                (np.asarray(P_uic_bus_ref), legend_label('P_uic_bus_ref_sys_pu'), '--'),
-            ],
-            ylabel='Active power (p.u., system base)', model='baseline', show=_show,
-        )
-        save_single_model_multi(
-            thesis_dir, 'baseline_Q_uic_bus_pu', 'UIC reactive power at bus', t_np,
-            [(np.asarray(Q_uic_bus_actual), legend_label('Q_uic_bus_actual_sys_pu'), None)],
-            ylabel='Reactive power (p.u., system base)', model='baseline', show=_show,
-        )
-        save_single_model_trace(
-            thesis_dir, 'baseline_Q_ref_uic_bus_pu', 'UIC reactive-power setpoint', t_np,
-            np.full_like(t_np, q_ref_ext_sys),
-            ylabel='Reactive power (p.u., system base)', model='baseline',
-            label=legend_label('Q_uic_bus_ref_sys_pu'), show=_show,
-        )
-        save_single_model_multi(
-            thesis_dir, 'baseline_inf_bus_PQ_pu', 'Infinite-bus power', t_np,
-            [
-                (np.asarray(P_gen_stored), legend_label('P_inf_sys_pu'), None),
-                (np.asarray(Q_gen_stored), legend_label('Q_inf_sys_pu'), None),
-            ],
-            ylabel='Power (p.u., system base)', model='baseline', show=_show,
-        )
-        print(f"Thesis figures saved to {thesis_dir}")
+        print(f"Thesis figures saved to {thesis_dir} ({len(paths)} files)")
 
     print(f"\nSimulation took {time.perf_counter() - t_start_wall:.2f} seconds.")
-    if not _cli.no_show and _cli.no_thesis_plots:
+    if _cli.show and not _cli.no_thesis_plots:
         plt.show(block=True)
-    elif not _cli.no_show and not _cli.no_thesis_plots:
-        plt.show(block=False)
     # endregion

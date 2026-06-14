@@ -39,7 +39,7 @@ def load():
         'windturbine': {
             'WindTurbine': [
                 ['name', 'UIC', 'S_n', 'V_n',         'J_m',             'J_e',             'K',                   'D',                   'Kp_pitch',     'Ki_pitch',   'T_pitch', 'max_pitch', 'min_pitch', 'max_pitch_rate',     'rho',     'R',      'P_rated', 'omega_m_rated', 'wind_rated', 'efficiency', 'MPT_filename', 'Cp_filename', 'speed_lpf_type', 'speed_lpf_corner_rad_s', 'speed_lpf_damping'],
-                ['WT1', 'UIC1',  15,    22,       352460500.,            1836784.,       69737644900./100.,      40109199.14006/10.,      0.6738,         0.06,          2.2,         30.0,           0.0,      10.0,    1.225,    120.97,       1.0,       7.559987120819503,      10.6,           0.95756,           'MPT_Kopt2150.csv', 'Cp_Ct_Cq.IEA15MW.ROSCO.txt', 2,                1.00810,                0.70000],
+                ['WT1', 'UIC1',  15,    22,       352460500.,            1836784.,       69737644900./100.,      35698200.0/10.,      0.6738,         0.06,          2.2,         30.0,           0.0,      10.0,    1.225,    120.97,       1.0,       7.559987120819503,      10.6,           0.95756,           'MPT_Kopt2150.csv', 'Cp_Ct_Cq.IEA15MW.ROSCO.txt', 2,                1.00810,                0.70000],
                 # [-,     -,     MW,     kV,           kg m^2,           kg m^2,          Nm/rad,       Nms/rad,        rad/pu,         rad/pu,        s,            deg,         deg,         deg/s,          kg/m^3,     m,          pu,         RPM,        m/s, -, -, -]
                 # Kp_pitch 0.6738 rad/pu = DTU Kpitch 38.6 deg/pu; Ki_pitch 0.06; Tpitch 2.2 s in windturbine._T_pitch_ref
             ],

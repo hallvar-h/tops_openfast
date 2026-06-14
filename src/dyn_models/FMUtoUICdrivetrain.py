@@ -357,6 +357,7 @@ class FMUtoUICdrivetrain(DAEModel):
         X = self.local_view(x)
         lpf_type = int(np.asarray(self._speed_lpf_type).ravel()[0])
         omega_for_pref = speed_pu_for_use(X, 'omega_e', 'omega_e_filt', lpf_type)
+        #omega_e_pu = float(np.asarray(X['omega_e']).ravel()[0])
         if self._gen_tq_kNm_meas is None:
             return np.atleast_1d(0.0)
         P_mech_kW = float(self._gen_tq_kNm_meas) * omega_for_pref * self._omega_base_rad_s

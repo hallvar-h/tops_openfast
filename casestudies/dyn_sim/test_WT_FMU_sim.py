@@ -17,6 +17,8 @@ import src.solvers as dps_sol
 import importlib
 importlib.reload(dps)
 
+from casestudies.dyn_sim.plotting.log_paths import FMU_UIC_CSV, ensure_log_dir
+
 if __name__ == '__main__':
     # Model loading and initialisation
     import casestudies.ps_data.test_WT_FMU_ as model_data
@@ -111,9 +113,9 @@ if __name__ == '__main__':
     if fmu_outputs_stored:
         df_fmu = pd.DataFrame(fmu_outputs_stored)
         out_df = pd.concat([out_df, df_fmu], axis=1)
-    out_path = os.path.join(project_root, 'casestudies', 'dyn_sim', 'test_WT_FMU_sim_results.csv')
-    out_df.to_csv(out_path, index=False)
-    print(f"\nResults saved to {out_path} ({len(out_df.columns)} columns)")
+    ensure_log_dir(FMU_UIC_CSV)
+    out_df.to_csv(FMU_UIC_CSV, index=False)
+    print(f"\nResults saved to {FMU_UIC_CSV} ({len(out_df.columns)} columns)")
 
     # Plot in windows with 2–3 related subplots each (colors match uic_sim)
     PLOT_COLORS = ['blue', '#FF1493', 'orange', 'green']  # deeppink, same as uic_sim
@@ -157,7 +159,7 @@ if __name__ == '__main__':
         ax2a.set_ylabel('Torque (kN-m)')
         ax2a.legend(loc='best', fontsize=8)
         ax2a.grid(True, alpha=0.3)
-        for i, col in enumerate(['GenSpeed', 'RefGenSpd', 'RotSpeed']):
+        for i, col in enumerate(['GenSpeed', 'RotSpeed']):
             if col in df.columns:
                 ax2b.plot(t_stored, df[col], label=col, color=PLOT_COLORS[i % len(PLOT_COLORS)], linewidth=1.5)
         ax2b.set_ylabel('Speed (rpm)')

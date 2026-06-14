@@ -1,11 +1,11 @@
-# Master thesis – Wind turbine power system simulation
+# Wind turbine power system simulations
 
-This repository contains a TOPS-based power system simulator with two ways to model the wind turbine:
+Simulations of the **electrical network** (power flow, buses, lines, UIC converter, time-domain integration) run in [TOPS](https://arxiv.org/abs/2101.02937). This repository adds the **wind turbine models** and case studies: a baseline wind turbine model fully within TOPS, and a coupled wind turbine model using co-simulation with OpenFAST through an FMU. An impedance identification tool has also been implemented to analyze and compare the two models.
 
-| Type | Description | Use case |
-|------|-------------|----------|
-| **Internal model** | Built-in `WindTurbine` (`src/dyn_models/windturbine.py`) – simplified drivetrain, MPT, Cp tables | Fast runs, no FMU, no OpenFAST |
-| **FMU co-simulation** | OpenFAST FMU – full aeroelastic turbine model | High-fidelity turbine dynamics |
+| Model | Description | Use case |
+|-------|-------------|----------|
+| **Baseline** | Two-mass drivetrain, MPT/Cp tables, simplified pitch control — all in TOPS | Faster runs for standard power system studies |
+| **Coupled** | OpenFAST (aero-servo-elastic simulation) co-simulated with TOPS | Full wind turbine dynamics for more intricate studies |
 
 ## Setup
 
@@ -16,41 +16,68 @@ This repository contains a TOPS-based power system simulator with two ways to mo
    pip install -r requirements.txt
    ```
 
+## Repository layout
+
+- `src/dyn_models/` — wind turbine, converter, and coupling models (`WindTurbine`, `UIC`, `FMUtoUICdrivetrain`, perturbations, …)
+- `casestudies/dyn_sim/` — time-domain runs; `plotting/` regenerates thesis figures from CSV
+- `casestudies/impedance_stability/` — LF / MF / HF multitone ID and singletone cross-checks
+
 ## Running simulations
 
-### Internal wind turbine model
+### Baseline
 
-Uses the simplified `WindTurbine` model. No FMU required. Uses `wind_data/` (MPT, Cp tables).
+Standard power system studies representation of a wind turbine, using a two-mass drivetrain and simplified wind turbine control. Couples to a converter model called UIC (Unified Integral Control).
 
 ```bash
 python casestudies/dyn_sim/test_WT_sim.py
 ```
 
-### FMU co-simulation (OpenFAST)
+Results: `casestudies/dyn_sim/logs/wt/wt_model.csv`, `casestudies/dyn_sim/logs/wt/plots/thesis/`.
 
-Uses the OpenFAST FMU for full turbine dynamics (IEA 15 MW case `test1002`).
+Power-system definition: `casestudies/ps_data/test_WT.py` (network, UIC, and `WindTurbine` parameters).
 
-1. Place the FMU at either:
-   - `OpenFAST/fast.fmu` (preferred), or
-   - `fast.fmu` in the project root (fallback).
+### Coupled
 
-2. Ensure the OpenFAST case folder exists at `test1002/` in the project root (the FMU selects it via `testNr=1002`).
+OpenFAST supplies wind turbine dynamics while TOPS supplies the grid, UIC, and a TOPS-side drivetrain matched to `WindTurbine` for direct comparison between the two models.
+
+1. Place the FMU at `OpenFAST/fast.fmu` (preferred) or `fast.fmu` in the project root.
+
+2. Keep the OpenFAST case at `test1002/` (selected by `testNr=1002`).
 
 3. Run:
    ```bash
    python casestudies/dyn_sim/test_WT_FMU_drivetrain_sim.py
    ```
 
-   Results are written to:
-   - `casestudies/dyn_sim/logs/fmu_drivetrain/fmu_drivetrain.csv`
-   - `casestudies/dyn_sim/logs/fmu_drivetrain/plots/`
+   Results: `casestudies/dyn_sim/logs/fmu_drivetrain/fmu_drivetrain.csv`, `casestudies/dyn_sim/logs/fmu_drivetrain/plots/thesis/`.
+
+   Replot from CSV (baseline + coupled + comparison, no re-simulation):
+
+   ```bash
+   python casestudies/dyn_sim/plotting/regenerate_thesis_plots_from_csv.py
+   ```
+
+   Comparison figures: `casestudies/dyn_sim/logs/compare/plots/thesis/`
+
+**Configuration:** TOPS — `casestudies/ps_data/test_WT_FMU_drivetrain_.py` (network, UIC, `FMUtoUICdrivetrain` interface). OpenFAST configuration files lie under `test1002/` (`mainInput.fst`, `IEA-15-240-RWT_*.dat`, `ControlData/ROSCO.IEA15MW.IN`, `WindData/`). OpenFAST's initial conditions are set in the case files, so startup transients are to be expected.
+
+## Impedance stability (band-split multitone FFT)
+
+Impedance analysis of the converter terminal: baseline WT vs coupled FMU, using three band-limited multitone runs (LF / MF / HF) and optional singletone checks.
+
+```bash
+python casestudies/impedance_stability/multitone_fft_bands/validate_plan.py
+python casestudies/impedance_stability/multitone_fft_bands/run_multitone_id_wt.py
+python casestudies/impedance_stability/multitone_fft_bands/run_multitone_id_fmu.py
+python casestudies/impedance_stability/multitone_fft_bands/run_singletone.py --plant wt --freq 0.17
+```
+
+Results under `casestudies/impedance_stability/logs/` (`wt_uic_multitone_fft_bands/`, `fmu_uic_multitone_fft_bands/`, singletone subdirs).
+
+Band specs and workflow: [`casestudies/impedance_stability/README.md`](casestudies/impedance_stability/README.md), [`multitone_fft_bands/README.md`](casestudies/impedance_stability/multitone_fft_bands/README.md). Paths: `casestudies/impedance_stability/paths.py`.
 
 ## TOPS
 
-This project builds on **TOPS** (Tiny Open Power System Simulator). For use in the course TET4180 at NTNU. Huge thanks to hallvard-h for this lightweight simulation tool.
+Power flow and time-domain simulation use **TOPS** (Tiny Open Power System Simulator) by Hallvard Haugdal. Thanks for making the underlying tool available.
 
-Features: Newton-Raphson power flow, dynamic time domain simulation (RMS/phasor), linearization, eigenvalue analysis/modal analysis.
-
-**Citing:** If you use this code for your research, please cite [this paper](https://arxiv.org/abs/2101.02937).
-
-**Contact:** [Hallvar Haugdal](mailto:hallvhau@gmail.com)
+**Citing:** [this paper](https://arxiv.org/abs/2101.02937). **Contact:** [Hallvard Haugdal](mailto:hallvhau@gmail.com)
