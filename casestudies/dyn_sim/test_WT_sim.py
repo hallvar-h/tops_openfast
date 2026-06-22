@@ -4,10 +4,10 @@ import argparse
 # Add project root to Python path
 # script_dir = os.path.dirname(os.path.abspath(__file__))
 # project_root = os.path.dirname(os.path.dirname(script_dir))
-from pathlib import Path
-project_root = Path(__file__).parents[2]
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# from pathlib import Path
+# project_root = Path(__file__).parents[2]
+# if project_root not in sys.path:
+#     sys.path.insert(0, project_root)
 
 from collections import defaultdict
 import pandas as pd
@@ -59,7 +59,7 @@ if __name__ == '__main__':
 
     t = 0
     result_dict = defaultdict(list)
-    t_end = 240. # Simulation time
+    t_end = 10. # Simulation time
     # t_end = 40.0  # Simulation time
 
     # Solver
