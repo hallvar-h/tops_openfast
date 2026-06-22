@@ -3,14 +3,16 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tops"
-description = 'Tiny open power system simulator'
+name = "tops-openfast"
+description = ''
 readme = "README.md"
 requires-python = ">=3.7"
 license = {file="LICENSE"}
 version = "0.2.0"
 keywords = []
 authors = [
+  { name = "Sigrid Steffen"},
+  { name = "Lars Andreas Berg Hermansen"},
   { name = "Hallvar Haugdal", email = "hallvar.haugdal@sintef.no" },
 ]
 classifiers = [
@@ -18,16 +20,26 @@ classifiers = [
 	"Operating System :: OS Independent",
 ]
 dependencies = [
+	"tops",
 	"numpy",
 	"scipy",
 	"matplotlib",
 	"pandas",
 	"fmpy",
+	"ipykernel>=6.16.2",
 ]
 
-[project.urls]
-"Homepage" = "https://github.com/hallvar-h/TOPS"
-"Bug Tracker" = "https://github.com/hallvar-h/TOPS/issues"
+# [project.urls]
+# "Homepage" = "https://github.com/hallvar-h/TOPS"
+# "Bug Tracker" = "https://github.com/hallvar-h/TOPS/issues"
 
-[tool.setuptools]
-packages = ["src", "src.dyn_models", "casestudies", "casestudies.ps_data", "casestudies.dyn_sim", "casestudies.modal_analysis"]
+
+# [tool.setuptools]
+# packages = ["src.tops_openfast", "src.tops_openfast.dyn_models", "casestudies", "casestudies.ps_data", "casestudies.dyn_sim", "casestudies.modal_analysis"]
+# packages.find.where = ["src"] # Automatically discovers "additional_package" inside src/
+
+[tool.setuptools.packages.find]
+# Scans both the src/ folder and the root folder for packages
+where = ["src", "."]
+# Ensures only folders containing an __init__.py are bundled
+namespaces = false 

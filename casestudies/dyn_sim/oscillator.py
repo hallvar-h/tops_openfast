@@ -2,11 +2,11 @@ from collections import defaultdict
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-import src.dynamic as dps
-import src.solvers as dps_sol
+import tops.dynamic as dps
+import tops.solvers as dps_sol
 import importlib
 importlib.reload(dps)
-from src.anim import Player
+from tops_openfast.anim import Player
 
 # region Model loading and initialisation stage
 from casestudies.ps_data import assignment_model as model_data

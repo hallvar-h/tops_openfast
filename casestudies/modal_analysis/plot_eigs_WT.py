@@ -1,15 +1,15 @@
-import os
-import sys
+# import os
+# import sys
 
 # Add project root (contains `src/`) to Python path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(script_dir))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# script_dir = os.path.dirname(os.path.abspath(__file__))
+# project_root = os.path.dirname(os.path.dirname(script_dir))
+# if project_root not in sys.path:
+#     sys.path.insert(0, project_root)
 
-import src.dynamic as dps
-import src.modal_analysis as dps_mdl
-import src.plotting as dps_plt
+import tops.dynamic as dps
+import tops.modal_analysis as dps_mdl
+import tops_openfast.plotting as dps_plt
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -17,7 +17,8 @@ if __name__ == '__main__':
 
     import casestudies.ps_data.test_WT as model_data
     model = model_data.load()
-    ps = dps.PowerSystemModel(model=model)
+    import tops_openfast.dyn_models as ext_lib
+    ps = dps.PowerSystemModel(model=model, user_mdl_lib=ext_lib)
     ps.init_dyn_sim()
 
     # Perform system linearization

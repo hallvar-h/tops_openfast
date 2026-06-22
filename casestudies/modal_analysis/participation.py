@@ -1,5 +1,5 @@
-import src.dynamic as dps
-import src.modal_analysis as dps_mdl
+import tops.dynamic as dps
+import tops.modal_analysis as dps_mdl
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd

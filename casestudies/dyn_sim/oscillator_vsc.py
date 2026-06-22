@@ -2,8 +2,8 @@ from collections import defaultdict
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-import src.dynamic as dps
-import src.solvers as dps_sol
+import tops.dynamic as dps
+import tops.solvers as dps_sol
 import importlib
 importlib.reload(dps)
 
@@ -75,7 +75,7 @@ result = pd.DataFrame(result_dict, columns=pd.MultiIndex.from_tuples(result_dict
 
 ## Here comes animation
 
-from src.anim import Player
+from tops_openfast.anim import Player
 oscillators = np.hstack((np.array(I_stored),np.array(v_stored),np.array(v_bus)))
 
 def update(frame):

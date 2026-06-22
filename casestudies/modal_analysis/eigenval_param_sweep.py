@@ -1,8 +1,7 @@
-import src.dynamic as dps
-import src.modal_analysis as dps_mdl
+import tops.dynamic as dps
+import tops.modal_analysis as dps_mdl
 import numpy as np
 import matplotlib.pyplot as plt
-import pandas as pd
 import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.colors import LinearSegmentedColormap
@@ -107,7 +106,8 @@ def main():
     parameter_values = np.linspace(3,10,10)  # Example parameter values
 
     model = model_data.load()
-    ps = dps.PowerSystemModel(model=model)
+    import tops_openfast.dyn_models as ext_lib
+    ps = dps.PowerSystemModel(model=model, user_mdl_lib=ext_lib)
     ps.init_dyn_sim()
     ps_lin = dps_mdl.PowerSystemModelLinearization(ps)
 

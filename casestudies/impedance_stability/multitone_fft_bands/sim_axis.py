@@ -11,8 +11,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-import src.dynamic as dps
-import src.solvers as dps_sol
+import tops.dynamic as dps
+import tops.solvers as dps_sol
 
 PlantId = Literal["wt", "fmu", "uic"]
 
@@ -69,7 +69,8 @@ def run_axis(
         flush=True,
     )
 
-    ps = dps.PowerSystemModel(model=model)
+    import tops_openfast.dyn_models as ext_lib
+    ps = dps.PowerSystemModel(model=model, user_mdl_lib=ext_lib)
     uic_model = ps.vsc["UIC_sig"]
 
     if plant == "wt":

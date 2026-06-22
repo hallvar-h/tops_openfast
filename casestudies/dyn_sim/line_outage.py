@@ -2,8 +2,8 @@ import sys
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import time
-import src.dynamic as dps
-import src.solvers as dps_sol
+import tops.dynamic as dps
+import tops.solvers as dps_sol
 import importlib
 importlib.reload(dps)
 

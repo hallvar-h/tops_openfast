@@ -1,9 +1,11 @@
 import sys
-import os
+# import os
 import argparse
 # Add project root to Python path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(script_dir))
+# script_dir = os.path.dirname(os.path.abspath(__file__))
+# project_root = os.path.dirname(os.path.dirname(script_dir))
+from pathlib import Path
+project_root = Path(__file__).parents[2]
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
@@ -14,8 +16,8 @@ import numpy as np
 import time
 from casestudies.dyn_sim.plotting.log_paths import WT_CSV, ensure_log_dir, wt_thesis_plots_dir
 from casestudies.dyn_sim.plotting.thesis_plot_style import save_baseline_thesis_plots
-import src.dynamic as dps
-import src.solvers as dps_sol
+import tops.dynamic as dps
+import tops.solvers as dps_sol
 import importlib
 importlib.reload(dps)
 
@@ -30,7 +32,9 @@ if __name__ == '__main__':
     # region Model loading and initialisation
     import casestudies.ps_data.test_WT as model_data
     model = model_data.load()
-    ps = dps.PowerSystemModel(model=model)  # Load into a PowerSystemModel object
+    import tops_openfast.dyn_models as ext_lib
+    
+    ps = dps.PowerSystemModel(model=model, user_mdl_lib=ext_lib)  # Load into a PowerSystemModel object
 
     # Set UIC p_ref from WT MPT - use WT's wind_speed_init() so it always matches
     wt_model = ps.windturbine['WindTurbine']
@@ -56,11 +60,14 @@ if __name__ == '__main__':
     t = 0
     result_dict = defaultdict(list)
     t_end = 240. # Simulation time
+    # t_end = 40.0  # Simulation time
 
     # Solver
     # Test explicit RK4 on the differential states. Since this is a DAE, solve algebraics explicitly inside f_ode.
     dt = 0.01
-    f_ode = lambda t_, x_: ps.state_derivatives(t_, x_, ps.solve_algebraic(t_, x_))
+    def f_ode(t_, x_):
+        return ps.state_derivatives(t_, x_, ps.solve_algebraic(t_, x_))
+    
     sol = dps_sol.SimpleRK4(f_ode, 0.0, x0, t_end, max_step=dt)
     # endregion
 

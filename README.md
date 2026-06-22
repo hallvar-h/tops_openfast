@@ -18,7 +18,7 @@ Simulations of the **electrical network** (power flow, buses, lines, UIC convert
 
 ## Repository layout
 
-- `src/dyn_models/` — wind turbine, converter, and coupling models (`WindTurbine`, `UIC`, `FMUtoUICdrivetrain`, perturbations, …)
+- `src/tops_openfast/dyn_models/` — wind turbine, converter, and coupling models (`WindTurbine`, `UIC`, `FMUtoUICdrivetrain`, perturbations, …)
 - `casestudies/dyn_sim/` — time-domain runs ([`README.md`](casestudies/dyn_sim/README.md)); `plotting/` regenerates thesis figures from CSV
 - `casestudies/impedance_stability/` — LF / MF / HF multitone ID and singletone cross-checks
 

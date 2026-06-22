@@ -1,22 +1,13 @@
 import sys
 import os
 import argparse
-
-script_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(os.path.dirname(script_dir))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-os.chdir(project_root)
-
 from collections import defaultdict
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 import time
-import src.dynamic as dps
-import src.solvers as dps_sol
-import importlib
-importlib.reload(dps)
+import tops.dynamic as dps
+import tops.solvers as dps_sol
 
 from casestudies.dyn_sim.plotting.log_paths import (
     FMU_DRIVETRAIN_CSV,
@@ -24,6 +15,17 @@ from casestudies.dyn_sim.plotting.log_paths import (
     fmu_drivetrain_thesis_plots_dir,
 )
 from casestudies.dyn_sim.plotting.thesis_plot_style import save_coupled_thesis_plots
+from pathlib import Path
+
+# script_dir = os.path.dirname(os.path.abspath(__file__))
+# project_root = os.path.dirname(os.path.dirname(script_dir))
+# if project_root not in sys.path:
+    # sys.path.insert(0, project_root)
+project_root = Path(__file__).parents[2]
+# Like DynaWind: cwd = project root so extract(unzipdir='openfast_fmu') and wd path work
+os.chdir(project_root)
+
+os.chdir(project_root)
 
 def _safe_legend(ax, *args, **kwargs):
     handles, labels = ax.get_legend_handles_labels()
@@ -42,7 +44,10 @@ if __name__ == '__main__':
     import casestudies.ps_data.test_WT_FMU_drivetrain_ as model_data
     model = model_data.load()
     print("Building PowerSystemModel...", flush=True)
-    ps = dps.PowerSystemModel(model=model)
+    import tops_openfast.dyn_models as ext_lib
+    ps = dps.PowerSystemModel(
+        model=model, user_mdl_lib=ext_lib
+    )  # Load into a PowerSystemModel object
 
     # UIC p_ref for power flow (FMU provides it during dynamics via connection)
     uic_model = ps.vsc['UIC_sig']
